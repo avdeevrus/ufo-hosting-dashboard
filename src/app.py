@@ -358,16 +358,57 @@ with placeholder_filters:
     yd = yd_creds()
     if yd:
         st.success("🔗 Я.Директ подключён")
-        st.caption("Статистика будет тянуться напрямую из API (после реализации Sync).")
+        sync_from = st.date_input(
+            "С",
+            value=pd.Timestamp.today() - pd.Timedelta(days=90),
+            key="yd_sync_from",
+            format="DD.MM.YYYY",
+        )
+        sync_to = st.date_input(
+            "По",
+            value=pd.Timestamp.today(),
+            key="yd_sync_to",
+            format="DD.MM.YYYY",
+        )
+        if st.button("🔄 Синхронизировать", use_container_width=True):
+            try:
+                from yandex_direct import fetch_campaign_report, to_ads_dataframe
+                with st.spinner("Тяну отчёт из Я.Директ (асинхронный API, до минуты)…"):
+                    raw = fetch_campaign_report(
+                        yd,
+                        date_from=str(sync_from),
+                        date_to=str(sync_to),
+                    )
+                    api_ads = to_ads_dataframe(raw)
+                if api_ads.empty:
+                    st.warning("API вернул пустой отчёт за период.")
+                else:
+                    st.session_state["yd_api_ads"] = api_ads
+                    st.success(f"✓ Синхронизировано: {len(api_ads)} строк, "
+                               f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " "))
+                    st.cache_data.clear()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка API: {e}")
+        if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
+            n = len(st.session_state["yd_api_ads"])
+            st.caption(f"📊 В сессии данных из API: {n} строк")
     else:
         st.caption(
             "🔌 Я.Директ API не подключён.  \n"
-            "Чтобы включить — добавьте `YANDEX_DIRECT_TOKEN` в Streamlit Secrets."
+            "Чтобы включить — добавьте `YANDEX_DIRECT_TOKEN` в Space Secrets."
         )
 
 
 orders = M.filter_orders_by_period(orders_all, d_from, d_to)
-ads = M.filter_ads_by_period(ads_all, d_from, d_to)
+# объединяем XLSX и API данные
+ads_combined = ads_all
+if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
+    ads_combined = pd.concat([ads_all, st.session_state["yd_api_ads"]], ignore_index=True)
+    # дедуплицируем по (month, campaign) — API данные приоритетнее
+    ads_combined = ads_combined.drop_duplicates(subset=["month", "campaign"], keep="last")
+ads = M.filter_ads_by_period(ads_combined, d_from, d_to)
+ads_all = ads_combined  # чтобы остальной код видел совместный набор
 
 
 # ============================================================

@@ -53,6 +53,7 @@ def fetch_campaign_report(creds: DirectCredentials,
     """Тянем отчёт по кампаниям за период (YYYY-MM-DD).
     Возвращаем DataFrame с колонками: date, campaign, impressions, clicks, spend_rub.
     """
+    import io
     headers = {
         "Authorization": f"Bearer {creds.token}",
         "Accept-Language": "ru",
@@ -87,7 +88,7 @@ def fetch_campaign_report(creds: DirectCredentials,
             time.sleep(wait)
             continue
         if r.status_code == 200:
-            df = pd.read_csv(pd.io.common.StringIO(r.text), sep="\t")
+            df = pd.read_csv(io.StringIO(r.text), sep="\t")
             df = df.rename(columns={
                 "Date": "date",
                 "CampaignName": "campaign",
@@ -99,3 +100,16 @@ def fetch_campaign_report(creds: DirectCredentials,
             return df
         r.raise_for_status()
     raise TimeoutError("Не удалось получить отчёт Яндекс.Директ за разумное время")
+
+
+def to_ads_dataframe(report_df: pd.DataFrame) -> pd.DataFrame:
+    """Конвертируем дневной отчёт API в наш ads-формат (помесячный)."""
+    if report_df is None or report_df.empty:
+        return pd.DataFrame()
+    df = report_df.copy()
+    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
+    g = (df.groupby(["month", "campaign"], as_index=False)
+         .agg(spend_rub=("spend_rub", "sum")))
+    g["source_file"] = "Yandex.Direct API"
+    g["source_sheet"] = "API"
+    return g
