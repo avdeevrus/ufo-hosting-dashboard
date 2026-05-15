@@ -97,17 +97,30 @@ def _classify_product(name: str) -> tuple[str, str]:
     return (family, location)
 
 
-def load_orders() -> pd.DataFrame:
-    """Грузим все CSV из data/orders/, объединяем и дедуплицируем по ID покупки."""
-    files = sorted(ORDERS_DIR.glob("*.csv"))
+def _orders_sources(extra_files=None):
+    """Список источников CSV: дисковые файлы + загруженные через UI."""
+    disk = sorted(ORDERS_DIR.glob("*.csv"))
+    extra = list(extra_files) if extra_files else []
+    return disk + extra
+
+
+def load_orders(extra_files=None) -> pd.DataFrame:
+    """Грузим все CSV из data/orders/ + любые file-like объекты из extra_files.
+    Объединяем и дедуплицируем по ID покупки."""
+    sources = _orders_sources(extra_files)
     frames: list[pd.DataFrame] = []
-    for fp in files:
-        df = pd.read_csv(fp, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    for src in sources:
+        try:
+            df = pd.read_csv(src, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+        except Exception:
+            if hasattr(src, "seek"):
+                src.seek(0)
+            df = pd.read_csv(src, encoding="utf-8", dtype=str, keep_default_na=False)
         df.columns = [c.strip().strip('"').strip() for c in df.columns]
         if df.columns[0] != "ID покупки":
             df = df.rename(columns={df.columns[0]: "ID покупки"})
         df = df[df["ID покупки"].str.strip() != "Итого и средние"].copy()
-        df["__source__"] = fp.name
+        df["__source__"] = getattr(src, "name", str(src))
         frames.append(df)
     if not frames:
         return pd.DataFrame()
@@ -209,12 +222,15 @@ def _read_campaigns_block(ws, header_row: int, name_col: int, spend_col: int,
     return rows
 
 
-def load_ads() -> pd.DataFrame:
-    """Грузим все XLSX из data/ads/, парсим каждый лист (месяц)."""
+def load_ads(extra_files=None) -> pd.DataFrame:
+    """Грузим все XLSX из data/ads/ + загруженные через UI."""
     files = sorted(ADS_DIR.glob("*.xlsx"))
+    if extra_files:
+        files = files + list(extra_files)
     records = []
     for fp in files:
         wb = openpyxl.load_workbook(fp, data_only=True)
+        source_name = getattr(fp, "name", str(fp))
         for sheet_name in wb.sheetnames:
             month_dt = _parse_sheet_month(sheet_name)
             if month_dt is None:
@@ -230,7 +246,7 @@ def load_ads() -> pd.DataFrame:
                         "month": month_dt,
                         "campaign": campaign,
                         "spend_rub": spend,
-                        "source_file": fp.name,
+                        "source_file": source_name,
                         "source_sheet": sheet_name,
                     })
         wb.close()
