@@ -8,33 +8,41 @@ UFO Hosting — Управленческий дашборд окупаемост
 from __future__ import annotations
 
 import sys
+import traceback
 from pathlib import Path
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from data_loader import (
-    ADS_DIR, ORDERS_DIR,
-    ads_monthly_totals, load_ads, load_orders,
-)
-import metrics as M
-from yandex_direct import get_credentials as yd_creds
-
-
-# ============================================================
-#                       Конфигурация и стили
-# ============================================================
-
+# Базовая конфигурация страницы должна быть ПЕРВОЙ — чтобы при любых ошибках
+# импорта пользователь видел хотя бы заголовок и сообщение.
 st.set_page_config(
     page_title="UFO Hosting · Окупаемость рекламы",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from data_loader import (
+        ADS_DIR, ORDERS_DIR,
+        ads_monthly_totals, load_ads, load_orders,
+    )
+    import metrics as M
+    from yandex_direct import get_credentials as yd_creds
+except Exception as e:
+    st.error("Ошибка инициализации приложения")
+    st.code(traceback.format_exc())
+    st.stop()
+
+
+# ============================================================
+#                       Стили
+# ============================================================
 
 PALETTE = {
     "bg": "#ffffff",
