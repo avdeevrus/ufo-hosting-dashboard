@@ -11,22 +11,48 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
 
-      - name: Push to Hugging Face Space
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install huggingface_hub
+        run: pip install --quiet "huggingface_hub>=0.25"
+
+      - name: Upload to HF Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_USERNAME: avdeevrus
-          HF_SPACE: ufo-hosting-dashboard
         run: |
           if [ -z "$HF_TOKEN" ]; then
             echo "HF_TOKEN secret is not set"
             exit 1
           fi
-          git config --global user.email "avdeevrus@users.noreply.github.com"
-          git config --global user.name "GitHub Action HF Sync"
-          REMOTE="https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE}"
-          git push --force "$REMOTE" main
-          echo "Pushed to https://huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE}"
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          api.upload_folder(
+              folder_path=".",
+              repo_id="avdeevrus/ufo-hosting-dashboard",
+              repo_type="space",
+              commit_message="Sync from GitHub via Actions",
+              ignore_patterns=[
+                  ".git/*",
+                  ".git",
+                  ".github/*",
+                  "data/orders/*.csv",
+                  "data/ads/*.xlsx",
+                  ".venv/*",
+                  "__pycache__/*",
+                  "**/__pycache__/*",
+                  "*.pyc",
+                  ".playwright-mcp/*",
+                  "*.png",
+                  ".claude/*",
+                  "reports/*",
+              ],
+          )
+          print("Pushed to https://huggingface.co/spaces/avdeevrus/ufo-hosting-dashboard")
+          PY
