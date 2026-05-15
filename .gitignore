@@ -3,7 +3,9 @@
 __pycache__/
 *.pyc
 .DS_Store
-.streamlit/
+
+# Streamlit: коммитим config.toml (тема), но НЕ секреты
+.streamlit/secrets.toml
 
 # Persistence Streamlit
 *.log
