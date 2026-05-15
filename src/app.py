@@ -34,6 +34,7 @@ try:
     )
     import metrics as M
     from yandex_direct import get_credentials as yd_creds
+    import storage
 except Exception as e:
     st.error("Ошибка инициализации приложения")
     st.code(traceback.format_exc())
@@ -189,6 +190,21 @@ def kpi_card(label: str, value: str, delta: str = "", kind: str = "", delta_kind
 
 
 # ============================================================
+#                       Persistent storage (HF Dataset)
+# ============================================================
+
+@st.cache_resource(show_spinner="Синхронизирую данные из облака…")
+def _initial_storage_sync():
+    if not storage.is_enabled():
+        return {"enabled": False}
+    storage.ensure_dataset_exists()
+    return storage.sync_down()
+
+
+_sync_info = _initial_storage_sync()
+
+
+# ============================================================
 #                       Sidebar
 # ============================================================
 
@@ -210,8 +226,24 @@ with st.sidebar:
         key="ads_upload",
     )
 
+    # Сохраняем загруженные файлы в persistent storage (HF Dataset)
+    if storage.is_enabled():
+        for f in uploaded_orders or []:
+            key = f"_uploaded_{f.name}_{f.size}"
+            if key not in st.session_state:
+                if storage.upload_orders_csv(f.name, f.getvalue()):
+                    st.session_state[key] = True
+                    st.toast(f"💾 {f.name} сохранён в облако", icon="✅")
+        for f in uploaded_ads or []:
+            key = f"_uploaded_{f.name}_{f.size}"
+            if key not in st.session_state:
+                if storage.upload_ads_xlsx(f.name, f.getvalue()):
+                    st.session_state[key] = True
+                    st.toast(f"💾 {f.name} сохранён в облако", icon="✅")
+
+    storage_status = "💾 Облако подключено" if storage.is_enabled() else "🔌 Облачное хранилище не подключено"
     st.caption(
-        f"Файлы на диске сервера:  \n"
+        f"{storage_status}  \n"
         f"📁 заказов: {len(list(ORDERS_DIR.glob('*.csv')))}  \n"
         f"📁 рекламы: {len(list(ADS_DIR.glob('*.xlsx')))}"
     )
@@ -418,6 +450,95 @@ c8.markdown(kpi_card(
 
 
 # ============================================================
+#                       Сравнение с прошлым периодом
+# ============================================================
+
+# Сравнение всегда: последний месяц с платежами vs предпоследний
+_paid_orders_all = orders_all[orders_all["is_paid"]]
+pc = None
+if not _paid_orders_all.empty:
+    last_month_dt = _paid_orders_all["payment_date"].max().to_period("M").to_timestamp()
+    last_from = last_month_dt
+    last_to = last_month_dt + pd.offsets.MonthEnd(0)
+    prev_from = (last_month_dt - pd.DateOffset(months=1))
+    prev_to = last_month_dt - pd.Timedelta(days=1)
+    cur_kpi = M.compute_kpi(
+        M.filter_orders_by_period(orders_all, last_from, last_to),
+        M.filter_ads_by_period(ads_all, last_from, last_to),
+    )
+    prev_kpi = M.compute_kpi(
+        M.filter_orders_by_period(orders_all, prev_from, prev_to),
+        M.filter_ads_by_period(ads_all, prev_from, prev_to),
+    )
+
+    def _dpct(a, b):
+        if b is None or pd.isna(b) or b == 0:
+            return None
+        return (a - b) / abs(b) * 100
+
+    RU_MONTHS_FULL = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                      "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+    pc = {
+        "current": cur_kpi, "previous": prev_kpi,
+        "current_label": f"{RU_MONTHS_FULL[last_from.month]} {last_from.year}",
+        "prev_label": f"{RU_MONTHS_FULL[prev_from.month]} {prev_from.year}",
+        "deltas": {
+            "spend": _dpct(cur_kpi.spend, prev_kpi.spend),
+            "revenue": _dpct(cur_kpi.revenue, prev_kpi.revenue),
+            "new_clients": _dpct(cur_kpi.new_clients, prev_kpi.new_clients),
+            "arpu": _dpct(cur_kpi.arpu, prev_kpi.arpu),
+            "avg_check": _dpct(cur_kpi.avg_check, prev_kpi.avg_check),
+        },
+    }
+
+if pc:
+    st.markdown(
+        f'<div class="section-title">{pc["current_label"]} vs {pc["prev_label"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    def _delta_html(label, current_fmt, delta_val, *, invert=False):
+        if delta_val is None or pd.isna(delta_val):
+            return kpi_card(label, current_fmt, "—", delta_kind="neutral")
+        arrow = "↑" if delta_val >= 0 else "↓"
+        # invert=True если для метрики «расход» рост — это плохо
+        positive = (delta_val >= 0) if not invert else (delta_val <= 0)
+        delta_kind = "up" if positive else "down"
+        return kpi_card(
+            label, current_fmt,
+            f"{arrow} {abs(delta_val):.1f}% vs прошлый",
+            delta_kind=delta_kind,
+        )
+
+    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+    cc1.markdown(_delta_html(
+        "Расход",
+        fmt_rub(pc["current"].spend),
+        pc["deltas"]["spend"], invert=True,
+    ), unsafe_allow_html=True)
+    cc2.markdown(_delta_html(
+        "Доход",
+        fmt_rub(pc["current"].revenue),
+        pc["deltas"]["revenue"],
+    ), unsafe_allow_html=True)
+    cc3.markdown(_delta_html(
+        "Новых клиентов",
+        fmt_num(pc["current"].new_clients),
+        pc["deltas"]["new_clients"],
+    ), unsafe_allow_html=True)
+    cc4.markdown(_delta_html(
+        "ARPU",
+        fmt_rub(pc["current"].arpu),
+        pc["deltas"]["arpu"],
+    ), unsafe_allow_html=True)
+    cc5.markdown(_delta_html(
+        "Средний чек",
+        fmt_rub(pc["current"].avg_check),
+        pc["deltas"]["avg_check"],
+    ), unsafe_allow_html=True)
+
+
+# ============================================================
 #                       Главный график: динамика
 # ============================================================
 
@@ -562,6 +683,43 @@ with col_right:
 
 
 # ============================================================
+#                       Воронка клиентов
+# ============================================================
+
+fn = M.funnel(orders)
+if not fn.empty:
+    st.markdown('<div class="section-title">Воронка клиентов</div>', unsafe_allow_html=True)
+
+    fcol1, fcol2 = st.columns([1.4, 1])
+    with fcol1:
+        fig_fn = go.Figure(go.Funnel(
+            y=fn["stage"],
+            x=fn["count"],
+            textinfo="value+percent initial",
+            marker=dict(color=[PALETTE["primary"], PALETTE["green"], PALETTE["orange"], PALETTE["purple"]]),
+            connector=dict(line=dict(color=PALETTE["border"], width=1)),
+        ))
+        fig_fn.update_layout(**PLOTLY_LAYOUT, height=320)
+        st.plotly_chart(fig_fn, use_container_width=True)
+
+    with fcol2:
+        total = fn.iloc[0]["count"]
+        for _, row in fn.iterrows():
+            share = row["count"] / total * 100 if total else 0
+            st.markdown(
+                f"""<div style='padding:0.5rem 0.7rem; margin-bottom:0.4rem; background:#ffffff;
+                border:1px solid {PALETTE['border']}; border-radius:8px;
+                display:flex; justify-content:space-between; align-items:center;'>
+                <div style='color:{PALETTE['text']}; font-weight:500;'>{row['stage']}</div>
+                <div style='text-align:right;'>
+                  <div style='font-weight:700; color:{PALETTE['primary']};'>{int(row['count']):,}</div>
+                  <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{share:.1f}% от старта</div>
+                </div></div>""".replace(",", " "),
+                unsafe_allow_html=True,
+            )
+
+
+# ============================================================
 #                       Когортная heatmap
 # ============================================================
 
@@ -680,6 +838,57 @@ with st.expander("🌍 По локациям серверов"):
                 "Средний чек, ₽": st.column_config.NumberColumn(format="%.0f"),
                 "Доля": st.column_config.NumberColumn(format="%.2f%%"),
             }
+        )
+
+with st.expander("📊 Распределение чеков и сезонность"):
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        cd = M.check_distribution(orders)
+        if not cd.empty:
+            fig_cd = go.Figure(go.Bar(
+                x=cd["bin_label"], y=cd["count"],
+                marker_color=PALETTE["primary"], opacity=0.85,
+                hovertemplate="Чек: %{x} ₽<br>Оплат: %{y}<extra></extra>",
+            ))
+            fig_cd.update_layout(
+                **PLOTLY_LAYOUT, height=290,
+                title="Распределение по сумме чека",
+                xaxis_tickangle=-35,
+                showlegend=False,
+            )
+            st.plotly_chart(fig_cd, use_container_width=True)
+
+    with col_b:
+        sw = M.seasonality_weekday(orders)
+        if not sw.empty:
+            fig_sw = go.Figure(go.Bar(
+                x=sw["weekday_label"], y=sw["revenue"],
+                marker_color=PALETTE["green"], opacity=0.85,
+                hovertemplate="%{x}<br>Доход: %{y:,.0f} ₽<extra></extra>",
+            ))
+            fig_sw.update_layout(
+                **PLOTLY_LAYOUT, height=290,
+                title="Доход по дню недели",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_sw, use_container_width=True)
+
+with st.expander("📈 Прогноз LTV когорт"):
+    fc = M.cohort_ltv_forecast(orders, horizon_months=12)
+    if not fc.empty:
+        cutoff = ads_all["month"].min() if not ads_all.empty else fc.index.min()
+        fc_show = fc.loc[fc.index >= cutoff].copy()
+        fc_show.index = fc_show.index.strftime("%b %Y")
+        fc_show.index.name = "Когорта"
+        st.caption(
+            "Накопленный доход на одного клиента когорты, прогноз на 12 месяцев "
+            "(простая экстраполяция с decay 0.9). По мере накопления данных прогноз становится точнее."
+        )
+        st.dataframe(
+            fc_show.iloc[:, :13],
+            use_container_width=True,
+            column_config={c: st.column_config.NumberColumn(format="%.0f ₽") for c in fc_show.columns[:13]},
         )
 
 with st.expander("📥 Скачать данные периода"):

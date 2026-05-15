@@ -330,3 +330,161 @@ def campaign_breakdown(ads: pd.DataFrame) -> pd.DataFrame:
          .reset_index())
     g["share"] = g["spend"] / g["spend"].sum()
     return g
+
+
+# ---------- Сравнение периодов ----------
+
+def previous_period(date_from: pd.Timestamp, date_to: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Тот же интервал, что и [from, to], но заканчивающийся за день до from."""
+    length = date_to - date_from
+    prev_to = date_from - pd.Timedelta(days=1)
+    prev_from = prev_to - length
+    return prev_from, prev_to
+
+
+def period_comparison(orders: pd.DataFrame, ads: pd.DataFrame,
+                      date_from: pd.Timestamp, date_to: pd.Timestamp) -> dict:
+    """Сравнение текущего периода с эквивалентным предыдущим. Возвращает
+    словарь с current/previous KPI и относительными дельтами."""
+    prev_from, prev_to = previous_period(date_from, date_to)
+    cur_o = filter_orders_by_period(orders, date_from, date_to)
+    cur_a = filter_ads_by_period(ads, date_from, date_to)
+    prev_o = filter_orders_by_period(orders, prev_from, prev_to)
+    prev_a = filter_ads_by_period(ads, prev_from, prev_to)
+    cur = compute_kpi(cur_o, cur_a)
+    prev = compute_kpi(prev_o, prev_a)
+
+    def delta_pct(a, b):
+        if b == 0 or b is None or pd.isna(b):
+            return None
+        return (a - b) / abs(b) * 100
+
+    return {
+        "current": cur, "previous": prev,
+        "prev_period": (prev_from, prev_to),
+        "deltas": {
+            "spend": delta_pct(cur.spend, prev.spend),
+            "revenue": delta_pct(cur.revenue, prev.revenue),
+            "unique_clients": delta_pct(cur.unique_clients, prev.unique_clients),
+            "new_clients": delta_pct(cur.new_clients, prev.new_clients),
+            "avg_check": delta_pct(cur.avg_check, prev.avg_check),
+            "arpu": delta_pct(cur.arpu, prev.arpu),
+        },
+    }
+
+
+# ---------- Воронка ----------
+
+def funnel(orders: pd.DataFrame) -> pd.DataFrame:
+    """Регистрации → Платящие → Повторные → Топ-плательщики (≥5 оплат)."""
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    reg_clients = orders["client_key"].nunique()
+    paying = paid["client_key"].nunique()
+    by_client = paid.groupby("client_key").size()
+    repeat = (by_client >= 2).sum()
+    loyal = (by_client >= 5).sum()
+    return pd.DataFrame([
+        {"stage": "Зарегистрированы", "count": reg_clients},
+        {"stage": "Хотя бы 1 оплата", "count": paying},
+        {"stage": "Повторная (2+)", "count": repeat},
+        {"stage": "Лояльные (5+)", "count": loyal},
+    ])
+
+
+# ---------- Распределение чеков ----------
+
+def check_distribution(orders: pd.DataFrame, max_bins: int = 20) -> pd.DataFrame:
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    amounts = paid["payment_amount"].dropna()
+    if amounts.empty:
+        return pd.DataFrame()
+    # квантильные границы для адекватной шкалы (отрезаем 1% выбросов)
+    p99 = amounts.quantile(0.99)
+    clipped = amounts.clip(upper=p99)
+    bins = pd.cut(clipped, bins=max_bins)
+    dist = bins.value_counts().sort_index().reset_index()
+    dist.columns = ["bin", "count"]
+    dist["bin_mid"] = dist["bin"].apply(lambda x: (x.left + x.right) / 2)
+    dist["bin_label"] = dist["bin"].apply(lambda x: f"{x.left:,.0f}–{x.right:,.0f}".replace(",", " "))
+    return dist
+
+
+# ---------- Сезонность ----------
+
+RU_WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+
+def seasonality_weekday(orders: pd.DataFrame) -> pd.DataFrame:
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    paid = paid.copy()
+    paid["weekday"] = paid["payment_date"].dt.weekday
+    g = (paid.groupby("weekday")
+         .agg(orders=("order_id", "count"),
+              revenue=("payment_amount", "sum"))
+         .reindex(range(7), fill_value=0)
+         .reset_index())
+    g["weekday_label"] = g["weekday"].apply(lambda i: RU_WEEKDAYS[i])
+    return g
+
+
+def seasonality_day_of_month(orders: pd.DataFrame) -> pd.DataFrame:
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    paid = paid.copy()
+    paid["day"] = paid["payment_date"].dt.day
+    g = (paid.groupby("day")
+         .agg(orders=("order_id", "count"),
+              revenue=("payment_amount", "sum"))
+         .reindex(range(1, 32), fill_value=0)
+         .reset_index())
+    return g
+
+
+# ---------- LTV-прогноз ----------
+
+def cohort_ltv_forecast(orders: pd.DataFrame, horizon_months: int = 12) -> pd.DataFrame:
+    """Прогноз накопленной выручки на клиента когорты на N месяцев вперёд.
+    Простая модель: M+k для k > max_observed экстраполируется через
+    усреднённое отношение M+1/M+0 от наблюдаемых когорт."""
+    cohort_rev = build_cohort_table(orders, basis="registration")
+    if cohort_rev.empty:
+        return pd.DataFrame()
+    sizes = cohort_client_counts(orders, basis="registration").reindex(cohort_rev.index).fillna(0)
+
+    # доход на клиента когорты, кумулятивно
+    rev_per_client = cohort_rev.div(sizes.replace(0, np.nan), axis=0).fillna(0)
+    cum_per_client = rev_per_client.cumsum(axis=1)
+
+    # средний прирост между смежными месяцами (доход в M+k минус M+k-1)
+    delta = rev_per_client.copy()
+    if delta.shape[1] > 1:
+        avg_delta = []
+        for i in range(1, delta.shape[1]):
+            col = delta.iloc[:, i].replace(0, np.nan).dropna()
+            avg_delta.append(col.mean())
+        # ожидаемый «хвост»: средний прирост из имеющихся, decay 0.9 в месяц
+        if avg_delta:
+            base_delta = np.median([d for d in avg_delta if not np.isnan(d)] or [0])
+        else:
+            base_delta = 0
+    else:
+        base_delta = 0
+
+    result = cum_per_client.copy()
+    last_col = result.shape[1]
+    # дополним столбцы до horizon_months
+    decay = 0.9
+    for k in range(last_col, horizon_months + 1):
+        col_name = f"M+{k}"
+        future_increment = base_delta * (decay ** (k - last_col))
+        result[col_name] = result.iloc[:, -1] + future_increment
+
+    result = result.round(0)
+    return result
