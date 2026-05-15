@@ -250,6 +250,55 @@ with st.sidebar:
 
     st.divider()
 
+    # Я.Директ API блок — всегда виден, чтобы можно было синхронизировать ДО загрузки CSV
+    _yd_creds_global = yd_creds()
+    if _yd_creds_global:
+        st.markdown("**🔗 Яндекс.Директ API**")
+        sync_from = st.date_input(
+            "С",
+            value=pd.Timestamp.today() - pd.Timedelta(days=90),
+            key="yd_sync_from",
+            format="DD.MM.YYYY",
+        )
+        sync_to = st.date_input(
+            "По",
+            value=pd.Timestamp.today(),
+            key="yd_sync_to",
+            format="DD.MM.YYYY",
+        )
+        if st.button("🔄 Синхронизировать", use_container_width=True, key="yd_sync_btn"):
+            try:
+                from yandex_direct import fetch_campaign_report, to_ads_dataframe
+                with st.spinner("Тяну отчёт из Я.Директ (до минуты)…"):
+                    raw = fetch_campaign_report(
+                        _yd_creds_global,
+                        date_from=str(sync_from),
+                        date_to=str(sync_to),
+                    )
+                    api_ads = to_ads_dataframe(raw)
+                if api_ads.empty:
+                    st.warning("API вернул пустой отчёт.")
+                else:
+                    st.session_state["yd_api_ads"] = api_ads
+                    st.success(
+                        f"✓ {len(api_ads)} строк, "
+                        f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " ")
+                    )
+                    st.cache_data.clear()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка API: {e}")
+        if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
+            n = len(st.session_state["yd_api_ads"])
+            st.caption(f"📊 В сессии из API: **{n}** строк")
+    else:
+        st.caption(
+            "🔌 Я.Директ API не подключён.  \n"
+            "Добавьте `YANDEX_DIRECT_TOKEN` в Space Secrets."
+        )
+
+    st.divider()
+
     # Период и фильтры будут после загрузки данных
     placeholder_filters = st.container()
 
@@ -351,53 +400,6 @@ with placeholder_filters:
         help="100% = весь доход приписываем рекламе. Уменьшите, если значимая часть клиентов приходит из SEO/прямых.",
     )
     attribution_factor = attribution_pct / 100.0
-
-    st.divider()
-
-    # Yandex Direct status
-    yd = yd_creds()
-    if yd:
-        st.success("🔗 Я.Директ подключён")
-        sync_from = st.date_input(
-            "С",
-            value=pd.Timestamp.today() - pd.Timedelta(days=90),
-            key="yd_sync_from",
-            format="DD.MM.YYYY",
-        )
-        sync_to = st.date_input(
-            "По",
-            value=pd.Timestamp.today(),
-            key="yd_sync_to",
-            format="DD.MM.YYYY",
-        )
-        if st.button("🔄 Синхронизировать", use_container_width=True):
-            try:
-                from yandex_direct import fetch_campaign_report, to_ads_dataframe
-                with st.spinner("Тяну отчёт из Я.Директ (асинхронный API, до минуты)…"):
-                    raw = fetch_campaign_report(
-                        yd,
-                        date_from=str(sync_from),
-                        date_to=str(sync_to),
-                    )
-                    api_ads = to_ads_dataframe(raw)
-                if api_ads.empty:
-                    st.warning("API вернул пустой отчёт за период.")
-                else:
-                    st.session_state["yd_api_ads"] = api_ads
-                    st.success(f"✓ Синхронизировано: {len(api_ads)} строк, "
-                               f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " "))
-                    st.cache_data.clear()
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка API: {e}")
-        if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
-            n = len(st.session_state["yd_api_ads"])
-            st.caption(f"📊 В сессии данных из API: {n} строк")
-    else:
-        st.caption(
-            "🔌 Я.Директ API не подключён.  \n"
-            "Чтобы включить — добавьте `YANDEX_DIRECT_TOKEN` в Space Secrets."
-        )
 
 
 orders = M.filter_orders_by_period(orders_all, d_from, d_to)
