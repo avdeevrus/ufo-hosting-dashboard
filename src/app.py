@@ -37,95 +37,103 @@ st.set_page_config(
 )
 
 PALETTE = {
-    "bg": "#0a0e27",
-    "panel": "#141a3a",
-    "text": "#e8ebf5",
-    "muted": "#9ba3d4",
-    "gold": "#f4c95d",
-    "green": "#7ed7a0",
-    "coral": "#ff8a73",
-    "blue": "#7aa6ff",
-    "violet": "#b294ff",
+    "bg": "#ffffff",
+    "panel": "#f6f8fa",
+    "border": "#d0d7de",
+    "text": "#0d1117",
+    "muted": "#57606a",
+    "primary": "#1f6feb",   # синий — главный
+    "green": "#1a7f37",     # доход / успех
+    "red": "#cf222e",       # расход / потери
+    "orange": "#d97706",    # внимание
+    "purple": "#8250df",    # дополнительный
 }
 
 st.markdown(
     f"""
     <style>
     .stApp {{
-        background: radial-gradient(circle at 15% 0%, #1a1f4a 0%, {PALETTE['bg']} 55%);
+        background: {PALETTE['bg']};
     }}
-    .main .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1500px; }}
+    .main .block-container {{
+        padding-top: 1.4rem; padding-bottom: 2.4rem; max-width: 1500px;
+    }}
 
     /* Заголовок */
-    h1 {{ font-weight: 800; letter-spacing: -0.5px; }}
+    h1 {{
+        font-weight: 700; letter-spacing: -0.4px; color: {PALETTE['text']};
+    }}
     .ufo-hero {{
         display: flex; align-items: center; justify-content: space-between;
-        padding: 1.1rem 1.4rem; border-radius: 16px;
-        background: linear-gradient(135deg, rgba(244,201,93,0.10), rgba(122,166,255,0.06));
-        border: 1px solid rgba(244,201,93,0.18);
-        margin-bottom: 1.2rem;
+        padding: 1.1rem 1.4rem; border-radius: 12px;
+        background: {PALETTE['panel']};
+        border: 1px solid {PALETTE['border']};
+        margin-bottom: 1.4rem;
     }}
-    .ufo-hero h1 {{ margin: 0; font-size: 1.85rem; }}
-    .ufo-hero .ufo-sub {{ color: {PALETTE['muted']}; font-size: 0.95rem; margin-top: 0.2rem; }}
+    .ufo-hero h1 {{ margin: 0; font-size: 1.55rem; color: {PALETTE['text']}; }}
+    .ufo-hero .ufo-sub {{
+        color: {PALETTE['muted']}; font-size: 0.88rem; margin-top: 0.25rem;
+    }}
     .ufo-hero .ufo-period-badge {{
-        background: rgba(244,201,93,0.15); color: {PALETTE['gold']};
-        padding: 0.35rem 0.8rem; border-radius: 999px; font-weight: 600; font-size: 0.85rem;
+        background: #ffffff; color: {PALETTE['text']};
+        padding: 0.4rem 0.9rem; border-radius: 8px; font-weight: 600;
+        font-size: 0.82rem; border: 1px solid {PALETTE['border']};
     }}
 
     /* KPI плитки */
     .kpi-card {{
-        background: rgba(20, 26, 58, 0.65);
-        backdrop-filter: blur(8px);
-        border: 1px solid rgba(155, 163, 212, 0.12);
-        border-radius: 14px;
-        padding: 1.1rem 1.2rem;
+        background: #ffffff;
+        border: 1px solid {PALETTE['border']};
+        border-radius: 10px;
+        padding: 1.05rem 1.2rem;
         height: 100%;
+        transition: border-color 0.15s ease;
     }}
+    .kpi-card:hover {{ border-color: #8c959f; }}
     .kpi-card .kpi-label {{
-        color: {PALETTE['muted']}; font-size: 0.78rem; text-transform: uppercase;
-        letter-spacing: 0.5px; margin-bottom: 0.45rem;
+        color: {PALETTE['muted']}; font-size: 0.72rem; text-transform: uppercase;
+        letter-spacing: 0.4px; margin-bottom: 0.5rem; font-weight: 600;
     }}
     .kpi-card .kpi-value {{
-        color: {PALETTE['text']}; font-size: 1.85rem; font-weight: 700; line-height: 1.1;
+        color: {PALETTE['text']}; font-size: 1.65rem; font-weight: 700; line-height: 1.15;
     }}
     .kpi-card .kpi-delta {{
-        margin-top: 0.4rem; font-size: 0.82rem;
+        margin-top: 0.45rem; font-size: 0.78rem; color: {PALETTE['muted']};
     }}
-    .kpi-card.primary {{ border: 1px solid rgba(244,201,93,0.35); }}
-    .kpi-card.primary .kpi-value {{ color: {PALETTE['gold']}; }}
-    .kpi-card.green .kpi-value  {{ color: {PALETTE['green']}; }}
-    .kpi-card.coral .kpi-value  {{ color: {PALETTE['coral']}; }}
-    .kpi-card.blue  .kpi-value  {{ color: {PALETTE['blue']}; }}
-    .kpi-delta.up   {{ color: {PALETTE['green']}; }}
-    .kpi-delta.down {{ color: {PALETTE['coral']}; }}
+    .kpi-card.primary .kpi-value {{ color: {PALETTE['primary']}; }}
+    .kpi-card.green   .kpi-value {{ color: {PALETTE['green']}; }}
+    .kpi-card.red     .kpi-value {{ color: {PALETTE['red']}; }}
+    .kpi-card.orange  .kpi-value {{ color: {PALETTE['orange']}; }}
+    .kpi-delta.up   {{ color: {PALETTE['green']}; font-weight: 600; }}
+    .kpi-delta.down {{ color: {PALETTE['red']}; font-weight: 600; }}
     .kpi-delta.neutral {{ color: {PALETTE['muted']}; }}
 
     /* Секции */
     .section-title {{
-        margin: 1.6rem 0 0.8rem 0; font-size: 1.15rem; font-weight: 700;
-        color: {PALETTE['text']}; display: flex; align-items: center; gap: 0.5rem;
-    }}
-    .section-title:before {{
-        content: ""; width: 4px; height: 18px; border-radius: 2px;
-        background: linear-gradient(180deg, {PALETTE['gold']}, {PALETTE['blue']});
+        margin: 1.8rem 0 0.7rem 0; font-size: 0.92rem; font-weight: 700;
+        color: {PALETTE['muted']}; text-transform: uppercase; letter-spacing: 0.5px;
     }}
 
     /* Sidebar */
-    [data-testid="stSidebar"] {{ background: rgba(10, 14, 39, 0.95); }}
-    [data-testid="stSidebar"] .stMarkdown h1 {{ font-size: 1.4rem; }}
+    [data-testid="stSidebar"] {{
+        background: {PALETTE['panel']}; border-right: 1px solid {PALETTE['border']};
+    }}
+    [data-testid="stSidebar"] h1 {{ font-size: 1.2rem; }}
 
-    /* Сделать дефолтные st.metric менее «жирными» */
-    [data-testid="stMetricValue"] {{ font-size: 1.6rem; font-weight: 700; }}
-    [data-testid="stMetricLabel"] {{ font-size: 0.78rem; color: {PALETTE['muted']}; text-transform: uppercase; }}
+    /* Дефолтные st.metric */
+    [data-testid="stMetricValue"] {{ font-size: 1.5rem; font-weight: 700; }}
+    [data-testid="stMetricLabel"] {{
+        font-size: 0.72rem; color: {PALETTE['muted']};
+        text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600;
+    }}
 
-    /* Меньше отступа в expander */
     .streamlit-expanderHeader {{ font-weight: 600; }}
 
     /* Footer */
     .ufo-footer {{
         color: {PALETTE['muted']}; font-size: 0.78rem; text-align: center;
         margin-top: 2rem; padding-top: 1rem;
-        border-top: 1px solid rgba(155, 163, 212, 0.1);
+        border-top: 1px solid {PALETTE['border']};
     }}
     </style>
     """,
@@ -133,13 +141,13 @@ st.markdown(
 )
 
 PLOTLY_LAYOUT = dict(
-    template="plotly_dark",
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(20,26,58,0.4)",
-    font=dict(color=PALETTE["text"], family="Inter, -apple-system, sans-serif"),
-    margin=dict(t=50, l=10, r=10, b=10),
-    xaxis=dict(gridcolor="rgba(155,163,212,0.08)", zerolinecolor="rgba(155,163,212,0.15)"),
-    yaxis=dict(gridcolor="rgba(155,163,212,0.08)", zerolinecolor="rgba(155,163,212,0.15)"),
+    template="plotly_white",
+    paper_bgcolor="#ffffff",
+    plot_bgcolor="#ffffff",
+    font=dict(color=PALETTE["text"], family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", size=12),
+    margin=dict(t=40, l=10, r=10, b=10),
+    xaxis=dict(gridcolor="#eaeef2", zerolinecolor="#d0d7de", linecolor="#d0d7de"),
+    yaxis=dict(gridcolor="#eaeef2", zerolinecolor="#d0d7de", linecolor="#d0d7de"),
 )
 
 
@@ -361,7 +369,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.markdown(kpi_card(
     "Расход на Директ",
     fmt_rub(ck.spend),
-    f"за {period_label}", kind="coral", delta_kind="neutral",
+    f"за {period_label}", kind="red", delta_kind="neutral",
 ), unsafe_allow_html=True)
 c2.markdown(kpi_card(
     "Доход (оплаты)",
@@ -370,17 +378,18 @@ c2.markdown(kpi_card(
 ), unsafe_allow_html=True)
 romi_kind = "up" if net >= 0 else "down"
 romi_arrow = "↑" if net >= 0 else "↓"
+romi_color_kind = "green" if net >= 0 else "red"
 c3.markdown(kpi_card(
     "ROMI",
     f"{romi_pct:+.1f}%",
     f"{romi_arrow} {fmt_rub(abs(net))} {'прибыли' if net >= 0 else 'к окупаемости'}",
-    kind="primary", delta_kind=romi_kind,
+    kind=romi_color_kind, delta_kind=romi_kind,
 ), unsafe_allow_html=True)
 c4.markdown(kpi_card(
     "Клиентов",
     fmt_num(ck.unique_clients),
     f"новых: {ck.new_clients} · повторных: {ck.repeat_clients}",
-    kind="blue",
+    kind="primary",
 ), unsafe_allow_html=True)
 
 st.markdown("<div style='height: 0.8rem'></div>", unsafe_allow_html=True)
@@ -391,11 +400,12 @@ c5.markdown(kpi_card("CAC", fmt_rub(cac), "стоимость нового кл�
 c6.markdown(kpi_card("ARPU", fmt_rub(ck.arpu), "доход на клиента"), unsafe_allow_html=True)
 c7.markdown(kpi_card("Средний чек", fmt_rub(ck.avg_check), f"{ck.avg_orders_per_client:.2f} оплат/клиент"), unsafe_allow_html=True)
 ltv_kind = "up" if ltv_cac >= 1 else "down"
+ltv_color = "green" if ltv_cac >= 1 else "red"
 c8.markdown(kpi_card(
     "LTV / CAC",
     f"{ltv_cac:.2f}×",
     "цель ≥ 1×, отлично ≥ 3×",
-    delta_kind=ltv_kind,
+    kind=ltv_color, delta_kind=ltv_kind,
 ), unsafe_allow_html=True)
 
 
@@ -413,7 +423,7 @@ if not ms.empty:
     fig = go.Figure()
     fig.add_bar(
         x=ms_d["month_label"], y=ms_d["spend"],
-        name="Расход на Директ", marker_color=PALETTE["coral"],
+        name="Расход на Директ", marker_color=PALETTE["red"],
         hovertemplate="<b>%{x}</b><br>Расход: %{y:,.0f} ₽<extra></extra>",
     )
     fig.add_bar(
@@ -424,7 +434,7 @@ if not ms.empty:
     fig.add_scatter(
         x=ms_d["month_label"], y=ms_d["new_clients"],
         name="Новых клиентов", mode="lines+markers", yaxis="y2",
-        line=dict(color=PALETTE["gold"], width=3), marker=dict(size=8),
+        line=dict(color=PALETTE["primary"], width=3), marker=dict(size=8),
         hovertemplate="<b>%{x}</b><br>Новых клиентов: %{y}<extra></extra>",
     )
     fig.update_layout(
@@ -434,7 +444,7 @@ if not ms.empty:
         yaxis_title="Рубли",
         yaxis2=dict(
             title="Новых клиентов", overlaying="y", side="right",
-            gridcolor="rgba(155,163,212,0.05)",
+            gridcolor="#eaeef2",
         ),
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -465,8 +475,8 @@ with col_left:
             top_fam, values="revenue", names="product_family",
             hole=0.55,
             color_discrete_sequence=[
-                PALETTE["gold"], PALETTE["blue"], PALETTE["green"],
-                PALETTE["violet"], PALETTE["coral"], "#5fb3d4", "#d4945f", "#888fa8",
+                PALETTE["primary"], PALETTE["purple"], PALETTE["green"],
+                PALETTE["orange"], PALETTE["red"], "#5fb3d4", "#d4945f", "#888fa8",
             ],
         )
         fig.update_traces(
@@ -493,15 +503,15 @@ with col_mid:
             if isinstance(email, str) and len(email) > 32:
                 email = email[:30] + "…"
             st.markdown(
-                f"""<div style='display:flex; justify-content:space-between; padding:0.4rem 0.6rem;
-                margin-bottom:0.3rem; background:rgba(20,26,58,0.55); border-radius:8px;
-                border:1px solid rgba(155,163,212,0.08);'>
+                f"""<div style='display:flex; justify-content:space-between; padding:0.55rem 0.75rem;
+                margin-bottom:0.35rem; background:#ffffff; border-radius:8px;
+                border:1px solid {PALETTE['border']};'>
                 <div>
                   <div style='font-weight:600; color:{PALETTE['text']};'>{name}</div>
                   <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{email} · {row['orders']} оплат</div>
                 </div>
                 <div style='text-align:right;'>
-                  <div style='font-weight:700; color:{PALETTE['gold']};'>{fmt_rub(row['total_paid'])}</div>
+                  <div style='font-weight:700; color:{PALETTE['green']};'>{fmt_rub(row['total_paid'])}</div>
                   <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{int(row['lifespan_days']) if pd.notna(row['lifespan_days']) else 0} дн.</div>
                 </div></div>""",
                 unsafe_allow_html=True,
@@ -518,16 +528,17 @@ with col_right:
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=repeat_share,
-        number={"suffix": "%", "font": {"color": PALETTE["gold"], "size": 36}},
+        number={"suffix": "%", "font": {"color": PALETTE["green"], "size": 36}},
         gauge={
             "axis": {"range": [0, 100], "tickcolor": PALETTE["muted"], "tickfont": {"color": PALETTE["muted"]}},
-            "bar": {"color": PALETTE["gold"]},
-            "bgcolor": "rgba(20,26,58,0.5)",
-            "borderwidth": 0,
+            "bar": {"color": PALETTE["green"], "thickness": 0.8},
+            "bgcolor": "#ffffff",
+            "borderwidth": 1,
+            "bordercolor": PALETTE["border"],
             "steps": [
-                {"range": [0, 30], "color": "rgba(255,138,115,0.18)"},
-                {"range": [30, 60], "color": "rgba(244,201,93,0.18)"},
-                {"range": [60, 100], "color": "rgba(126,215,160,0.18)"},
+                {"range": [0, 30], "color": "#fef2f2"},
+                {"range": [30, 60], "color": "#fef9c3"},
+                {"range": [60, 100], "color": "#dcfce7"},
             ],
         },
     ))
@@ -567,14 +578,14 @@ else:
     fig = go.Figure(go.Heatmap(
         z=z, x=x, y=y, text=text, texttemplate="%{text}",
         colorscale=[
-            [0.0, "rgba(20,26,58,0.4)"],
-            [0.3, "rgba(122,166,255,0.4)"],
-            [0.7, "rgba(244,201,93,0.6)"],
-            [1.0, "rgba(126,215,160,0.95)"],
+            [0.0, "#f6f8fa"],
+            [0.3, "#bfdbfe"],
+            [0.6, "#60a5fa"],
+            [1.0, "#1d4ed8"],
         ],
         hovertemplate="<b>Когорта %{y}</b><br>%{x}<br>Доход: %{z:,.0f} ₽<extra></extra>",
         showscale=False,
-        textfont=dict(color=PALETTE["text"], size=11),
+        textfont=dict(size=11),
     ))
     fig.update_layout(
         **PLOTLY_LAYOUT,
