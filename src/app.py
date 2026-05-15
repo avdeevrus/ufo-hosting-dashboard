@@ -244,24 +244,24 @@ orders_all, ads_all = load_all(
 )
 
 # Welcome-state если нет данных
-if orders_all.empty and ads_all.empty:
+HAS_DATA = not (orders_all.empty and ads_all.empty)
+
+if not HAS_DATA:
+    st.title("🛰️ UFO Hosting · Дашборд окупаемости рекламы")
     st.markdown(
-        """
-        <div class="ufo-hero">
-          <div>
-            <h1>🛰️ UFO Hosting · Дашборд окупаемости</h1>
-            <div class="ufo-sub">Загрузите выгрузки в сайдбаре слева, чтобы увидеть отчёт.</div>
-          </div>
-        </div>
-        """,
+        "<div style='color: #9ba3d4; font-size: 1rem; margin-top: -0.5rem; margin-bottom: 1.5rem;'>"
+        "Яндекс.Директ · LTV · CAC · Retention</div>",
         unsafe_allow_html=True,
     )
     st.info(
+        "👈 **Загрузите выгрузки в сайдбаре слева, чтобы увидеть отчёт.**\n\n"
         "**Что загружать:**\n\n"
         "• **CSV** — выгрузки «Содержимое заказов» из админки UFO Hosting (можно несколько за разные периоды)\n\n"
         "• **XLSX** — отчёты по рекламным кампаниям Яндекс.Директ (помесячно)\n\n"
         "Дашборд сам разберёт и склеит данные, дедуплицирует пересекающиеся периоды."
     )
+    with placeholder_filters:
+        st.caption("Фильтры станут доступны после загрузки данных.")
     st.stop()
 
 
@@ -272,10 +272,17 @@ if orders_all.empty and ads_all.empty:
 with placeholder_filters:
     st.markdown("**🎛️ Фильтры**")
 
-    pay_min = orders_all["payment_date"].min().date() if not orders_all.empty else ads_all["month"].min().date()
-    pay_max = orders_all["payment_date"].max().date() if not orders_all.empty else ads_all["month"].max().date()
-    ad_min = ads_all["month"].min().date() if not ads_all.empty else pay_min
-    ad_max = ads_all["month"].max().date() if not ads_all.empty else pay_max
+    if not orders_all.empty:
+        pay_min = orders_all["payment_date"].min().date()
+        pay_max = orders_all["payment_date"].max().date()
+    else:
+        pay_min = ads_all["month"].min().date()
+        pay_max = ads_all["month"].max().date()
+    if not ads_all.empty:
+        ad_min = ads_all["month"].min().date()
+        ad_max = ads_all["month"].max().date()
+    else:
+        ad_min, ad_max = pay_min, pay_max
     overall_min = min(pay_min, ad_min)
     overall_max = max(pay_max, ad_max)
 
