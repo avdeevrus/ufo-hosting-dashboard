@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ufo-dashboard",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": [
+        "run",
+        "src/app.py",
+        "--server.headless",
+        "true",
+        "--server.port",
+        "8520",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8520
+    }
+  ]
+}

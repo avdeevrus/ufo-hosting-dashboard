@@ -1,0 +1,20 @@
+# Окружение
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/
+
+# Persistence Streamlit
+*.log
+
+# ВАЖНО: реальные данные клиентов не уходят в репозиторий.
+# Каждый, кто клонирует репо, должен положить свои выгрузки локально.
+data/orders/*.csv
+data/ads/*.xlsx
+reports/
+
+# Сохраняем .gitkeep'ы чтобы структура папок была в репо
+!data/orders/.gitkeep
+!data/ads/.gitkeep
+!reports/.gitkeep
