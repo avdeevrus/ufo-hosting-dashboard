@@ -1,20 +1,27 @@
 """
-Заготовка интеграции с Яндекс.Директ Reports API v5.
+Интеграция с Яндекс.Директ Reports API v5.
 
-Чтобы это заработало, нужно:
+Чтобы это заработало:
   1. Зарегистрировать приложение в OAuth Яндекса: https://oauth.yandex.ru
      scope = `direct:api`
-  2. Получить OAuth-токен (обычная пользовательская авторизация — кнопкой в браузере).
+  2. Получить OAuth-токен.
   3. Положить токен в переменную окружения YANDEX_DIRECT_TOKEN
      (либо в Streamlit Secrets — `st.secrets["yandex_direct_token"]`).
 
 Документация: https://yandex.ru/dev/direct/doc/reports/reports.html
+
+Поддерживаемые отчёты:
+  - CAMPAIGN_PERFORMANCE_REPORT   — расход + базовые метрики по кампаниям
+  - CAMPAIGN_QUALITY_REPORT       — расширенный (CTR/CPC/Conv/Bounce)
+  - KEYWORD_PERFORMANCE_REPORT    — ключевые слова
+  - AD_PERFORMANCE_REPORT         — объявления (креативы)
 
 Без токена модуль не делает запросов — UI просто покажет, что нет подключения.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import time
 from dataclasses import dataclass
@@ -47,15 +54,11 @@ def get_credentials() -> DirectCredentials | None:
     return DirectCredentials(token=token, client_login=login)
 
 
-def fetch_campaign_report(creds: DirectCredentials,
-                          date_from: str,
-                          date_to: str,
-                          _cache_buster: str = "") -> pd.DataFrame:
-    """Тянем отчёт по кампаниям за период (YYYY-MM-DD).
-    Возвращаем DataFrame с колонками: date, campaign, impressions, clicks, spend_rub.
-    _cache_buster позволяет принудительно обновить кэш Streamlit при ручной синхронизации.
-    """
-    import io
+# ============================================================
+#                     Низкоуровневый запрос
+# ============================================================
+
+def _api_headers(creds: DirectCredentials) -> dict:
     headers = {
         "Authorization": f"Bearer {creds.token}",
         "Accept-Language": "ru",
@@ -68,68 +71,108 @@ def fetch_campaign_report(creds: DirectCredentials,
     }
     if creds.client_login:
         headers["Client-Login"] = creds.client_login
+    return headers
 
-    body = {
-        "params": {
-            "SelectionCriteria": {"DateFrom": date_from, "DateTo": date_to},
-            "FieldNames": ["Date", "CampaignName", "Impressions", "Clicks", "Cost"],
-            "ReportName": f"campaigns_{date_from}_{date_to}_{int(time.time())}",
-            "ReportType": "CAMPAIGN_PERFORMANCE_REPORT",
-            "DateRangeType": "CUSTOM_DATE",
-            "Format": "TSV",
-            "IncludeVAT": "YES",
-            "IncludeDiscount": "NO",
-        }
-    }
 
-    # Reports API асинхронный: до 5 повторов с ожиданием
-    for _ in range(20):
+def _handle_api_error(r: requests.Response) -> None:
+    """Поднимает RuntimeError с человекочитаемым сообщением по ошибке API."""
+    try:
+        r.encoding = "utf-8"
+        err = r.json().get("error", {})
+        code = err.get("error_code")
+        es = err.get("error_string", "")
+        ed = err.get("error_detail", "")
+        msg = f"Я.Директ API ошибка {code}: {es}"
+        if ed:
+            msg += f" — {ed}"
+        if code in (53, "53"):
+            msg += "\n→ В OAuth-приложении должно быть право «Использование API Директа»."
+        elif code in (54, "54"):
+            msg += "\n→ За период нет рекламных кампаний."
+        elif code in (58, "58"):
+            msg += (
+                "\n→ Нужна модерация Яндекса: зайдите на direct.yandex.ru → "
+                "Инструменты → Управление доступом → API → подайте заявку на доступ. "
+                "Модерация до 1–2 рабочих дней. До этого момента используйте XLSX-выгрузки."
+            )
+        elif code in (8800, "8800"):
+            msg += "\n→ Агентский аккаунт. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
+        elif code in (152, "152"):
+            msg += "\n→ Отчёт уже строится, попробуйте через минуту."
+        raise RuntimeError(msg)
+    except (ValueError, KeyError):
+        raise RuntimeError(f"Я.Директ API HTTP {r.status_code}: {r.text[:400]}")
+
+
+def _fetch_report(creds: DirectCredentials, body: dict,
+                  max_wait_iters: int = 20) -> pd.DataFrame:
+    """Generic: посылает body в Reports API, ждёт async-готовности и парсит TSV.
+
+    Reports API возвращает 201/202 пока отчёт строится; повторяем до max_wait_iters раз
+    с задержкой из заголовка retryIn. На 200 — парсим TSV.
+    """
+    headers = _api_headers(creds)
+    for _ in range(max_wait_iters):
         r = requests.post(REPORTS_URL, json=body, headers=headers, timeout=60)
         if r.status_code in (201, 202):
             wait = int(r.headers.get("retryIn", "5"))
             time.sleep(wait)
             continue
-        if r.status_code >= 400 and r.status_code != 200:
-            # Распакуем человекочитаемую ошибку, форсируя UTF-8
-            try:
-                r.encoding = "utf-8"
-                err = r.json().get("error", {})
-                code = err.get("error_code")
-                es = err.get("error_string", "")
-                ed = err.get("error_detail", "")
-                msg = f"Я.Директ API ошибка {code}: {es}"
-                if ed:
-                    msg += f" — {ed}"
-                if code in (53, "53"):
-                    msg += "\n→ В OAuth-приложении должно быть право «Использование API Директа»."
-                elif code in (54, "54"):
-                    msg += "\n→ За период нет рекламных кампаний."
-                elif code in (58, "58"):
-                    msg += (
-                        "\n→ Нужна модерация Яндекса: зайдите на direct.yandex.ru → "
-                        "Инструменты → Управление доступом → API → подайте заявку на доступ. "
-                        "Модерация до 1–2 рабочих дней. До этого момента используйте XLSX-выгрузки."
-                    )
-                elif code in (8800, "8800"):
-                    msg += "\n→ Агентский аккаунт. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
-                elif code in (152, "152"):
-                    msg += "\n→ Отчёт уже строится, попробуйте через минуту."
-                raise RuntimeError(msg)
-            except (ValueError, KeyError):
-                raise RuntimeError(f"Я.Директ API HTTP {r.status_code}: {r.text[:400]}")
         if r.status_code == 200:
-            df = pd.read_csv(io.StringIO(r.text), sep="\t")
-            df = df.rename(columns={
-                "Date": "date",
-                "CampaignName": "campaign",
-                "Impressions": "impressions",
-                "Clicks": "clicks",
-                "Cost": "spend_rub",
-            })
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            return df
+            return pd.read_csv(io.StringIO(r.text), sep="\t")
+        if r.status_code >= 400 and r.status_code != 200:
+            _handle_api_error(r)
         r.raise_for_status()
     raise TimeoutError("Не удалось получить отчёт Яндекс.Директ за разумное время")
+
+
+def _build_body(report_type: str, field_names: list[str],
+                date_from: str, date_to: str,
+                *, include_vat: str = "YES",
+                report_name: str | None = None) -> dict:
+    name = report_name or f"{report_type}_{date_from}_{date_to}_{int(time.time())}"
+    return {
+        "params": {
+            "SelectionCriteria": {"DateFrom": date_from, "DateTo": date_to},
+            "FieldNames": field_names,
+            "ReportName": name,
+            "ReportType": report_type,
+            "DateRangeType": "CUSTOM_DATE",
+            "Format": "TSV",
+            "IncludeVAT": include_vat,
+            "IncludeDiscount": "NO",
+        }
+    }
+
+
+# ============================================================
+#                     Базовый отчёт по кампаниям (для расходов)
+# ============================================================
+
+def fetch_campaign_report(creds: DirectCredentials,
+                          date_from: str,
+                          date_to: str,
+                          _cache_buster: str = "") -> pd.DataFrame:
+    """Базовый дневной отчёт: Date, CampaignName, Impressions, Clicks, Cost.
+
+    Используется для расчёта помесячных расходов и совмещения с XLSX-выгрузкой.
+    Возвращает DataFrame с колонками: date, campaign, impressions, clicks, spend_rub.
+    """
+    body = _build_body(
+        "CAMPAIGN_PERFORMANCE_REPORT",
+        ["Date", "CampaignName", "Impressions", "Clicks", "Cost"],
+        date_from, date_to,
+    )
+    df = _fetch_report(creds, body)
+    df = df.rename(columns={
+        "Date": "date",
+        "CampaignName": "campaign",
+        "Impressions": "impressions",
+        "Clicks": "clicks",
+        "Cost": "spend_rub",
+    })
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    return df
 
 
 def to_ads_dataframe(report_df: pd.DataFrame) -> pd.DataFrame:
@@ -143,3 +186,161 @@ def to_ads_dataframe(report_df: pd.DataFrame) -> pd.DataFrame:
     g["source_file"] = "Yandex.Direct API"
     g["source_sheet"] = "API"
     return g
+
+
+# ============================================================
+#                     Аналитика качества: кампании
+# ============================================================
+
+# Полный набор полей для CAMPAIGN_PERFORMANCE_REPORT (вкл. поведенческие и конверсии).
+# Conversions/ConversionRate/CostPerConversion работают только если в Я.Метрике
+# настроены цели и счётчик привязан к кампании. У UFO Hosting — есть.
+CAMPAIGN_QUALITY_FIELDS = [
+    "CampaignName", "CampaignType",
+    "Impressions", "Clicks", "Ctr",
+    "Cost", "AvgCpc",
+    "Conversions", "ConversionRate", "CostPerConversion",
+    "BounceRate", "AvgPageviews",
+]
+
+
+def fetch_campaign_quality(creds: DirectCredentials,
+                           date_from: str,
+                           date_to: str) -> pd.DataFrame:
+    """Расширенный отчёт по кампаниям за период: CTR, CPC, Conv, поведенческие.
+
+    Агрегат за весь период (без разрезa по дням). Возвращает DataFrame с колонками:
+    campaign, campaign_type, impressions, clicks, ctr, spend_rub, avg_cpc,
+    conversions, conversion_rate, cost_per_conversion, bounce_rate, avg_pageviews.
+    """
+    body = _build_body(
+        "CAMPAIGN_PERFORMANCE_REPORT",
+        CAMPAIGN_QUALITY_FIELDS,
+        date_from, date_to,
+    )
+    df = _fetch_report(creds, body)
+    df = df.rename(columns={
+        "CampaignName": "campaign",
+        "CampaignType": "campaign_type",
+        "Impressions": "impressions",
+        "Clicks": "clicks",
+        "Ctr": "ctr",
+        "Cost": "spend_rub",
+        "AvgCpc": "avg_cpc",
+        "Conversions": "conversions",
+        "ConversionRate": "conversion_rate",
+        "CostPerConversion": "cost_per_conversion",
+        "BounceRate": "bounce_rate",
+        "AvgPageviews": "avg_pageviews",
+    })
+    # API возвращает «--» для пустых значений (когда нет конверсий или поведенческих)
+    for col in ("ctr", "avg_cpc", "conversions", "conversion_rate",
+                "cost_per_conversion", "bounce_rate", "avg_pageviews"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("impressions", "clicks", "spend_rub"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
+
+# ============================================================
+#                     Аналитика качества: ключевые слова
+# ============================================================
+
+KEYWORD_REPORT_FIELDS = [
+    "CampaignName", "AdGroupName",
+    "Criterion", "MatchType",
+    "Impressions", "Clicks", "Ctr",
+    "Cost", "AvgCpc",
+    "Conversions", "ConversionRate", "CostPerConversion",
+]
+
+
+def fetch_keyword_report(creds: DirectCredentials,
+                         date_from: str,
+                         date_to: str) -> pd.DataFrame:
+    """Отчёт по ключевым словам за период. Агрегат, без разреза по дням.
+
+    Колонки: campaign, ad_group, criterion (ключевик/фраза), match_type,
+    impressions, clicks, ctr, spend_rub, avg_cpc,
+    conversions, conversion_rate, cost_per_conversion.
+    """
+    body = _build_body(
+        "KEYWORD_PERFORMANCE_REPORT",
+        KEYWORD_REPORT_FIELDS,
+        date_from, date_to,
+    )
+    df = _fetch_report(creds, body)
+    df = df.rename(columns={
+        "CampaignName": "campaign",
+        "AdGroupName": "ad_group",
+        "Criterion": "criterion",
+        "MatchType": "match_type",
+        "Impressions": "impressions",
+        "Clicks": "clicks",
+        "Ctr": "ctr",
+        "Cost": "spend_rub",
+        "AvgCpc": "avg_cpc",
+        "Conversions": "conversions",
+        "ConversionRate": "conversion_rate",
+        "CostPerConversion": "cost_per_conversion",
+    })
+    for col in ("ctr", "avg_cpc", "conversions", "conversion_rate", "cost_per_conversion"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("impressions", "clicks", "spend_rub"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
+
+
+# ============================================================
+#                     Аналитика качества: объявления (креативы)
+# ============================================================
+
+AD_REPORT_FIELDS = [
+    "CampaignName", "AdGroupName", "AdId",
+    "Impressions", "Clicks", "Ctr",
+    "Cost", "AvgCpc",
+    "Conversions", "ConversionRate",
+]
+
+
+def fetch_ad_report(creds: DirectCredentials,
+                    date_from: str,
+                    date_to: str) -> pd.DataFrame:
+    """Отчёт по объявлениям за период. Креативы для сравнения CTR / Conv.
+
+    Колонки: campaign, ad_group, ad_id, impressions, clicks, ctr, spend_rub,
+    avg_cpc, conversions, conversion_rate.
+
+    Примечание: Title/Text доступны через AD_PERFORMANCE_REPORT в виде отдельных
+    запросов; здесь мы выводим только идентификатор объявления, чтобы не
+    утяжелять выгрузку. По AdId можно перейти в интерфейс Директа.
+    """
+    body = _build_body(
+        "AD_PERFORMANCE_REPORT",
+        AD_REPORT_FIELDS,
+        date_from, date_to,
+    )
+    df = _fetch_report(creds, body)
+    df = df.rename(columns={
+        "CampaignName": "campaign",
+        "AdGroupName": "ad_group",
+        "AdId": "ad_id",
+        "Impressions": "impressions",
+        "Clicks": "clicks",
+        "Ctr": "ctr",
+        "Cost": "spend_rub",
+        "AvgCpc": "avg_cpc",
+        "Conversions": "conversions",
+        "ConversionRate": "conversion_rate",
+    })
+    for col in ("ctr", "avg_cpc", "conversions", "conversion_rate"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("impressions", "clicks", "spend_rub"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
