@@ -162,12 +162,12 @@ PLOTLY_LAYOUT = dict(
 
 
 def fmt_rub(v, suffix=" ₽"):
+    """Деньги: до миллиона — точные цифры с пробелами, от миллиона — млн."""
     if v is None or pd.isna(v):
         return "—"
-    if abs(v) >= 1_000_000:
+    av = abs(v)
+    if av >= 1_000_000:
         return f"{v/1_000_000:.2f} млн{suffix}"
-    if abs(v) >= 1_000:
-        return f"{v/1_000:.0f}K{suffix}"
     return f"{v:,.0f}{suffix}".replace(",", " ")
 
 
@@ -175,6 +175,19 @@ def fmt_num(v):
     if v is None or pd.isna(v):
         return "—"
     return f"{int(v):,}".replace(",", " ")
+
+
+def plural_ru(n, one, few, many):
+    """Русская плюрализация: 1 файл / 2 файла / 5 файлов."""
+    n = abs(int(n))
+    if n % 100 in (11, 12, 13, 14):
+        return many
+    last = n % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
 
 
 def kpi_card(label: str, value: str, delta: str = "", kind: str = "", delta_kind: str = "neutral"):
@@ -242,13 +255,15 @@ with st.sidebar:
         if _sync_info and _sync_info.get("error"):
             st.error(f"Ошибка облака: {_sync_info['error']}", icon="⚠️")
         else:
-            st.caption(f"💾 Облако · {n_o_disk} файлов с заказами синхронизировано")
+            files_word = plural_ru(n_o_disk, "файл", "файла", "файлов")
+            st.caption(f"💾 Облако · {n_o_disk} {files_word} синхронизировано")
         if st.button("Обновить из облака", use_container_width=True, key="resync_btn", type="secondary"):
             st.cache_resource.clear()
             st.cache_data.clear()
             st.rerun()
     else:
-        st.caption(f"Локально: {n_o_disk} файлов с заказами")
+        files_word = plural_ru(n_o_disk, "файл", "файла", "файлов")
+        st.caption(f"Локально: {n_o_disk} {files_word} с заказами")
 
     st.divider()
 
@@ -380,16 +395,91 @@ with placeholder_filters:
     overall_min = min(pay_min, ad_min)
     overall_max = max(pay_max, ad_max)
 
-    period = st.date_input(
+    # Пресеты периода — как у Я.Директ
+    PERIOD_PRESETS = [
+        "Сегодня",
+        "Вчера",
+        "Последние 7 дней",
+        "Последние 30 дней",
+        "Последние 90 дней",
+        "Этот месяц",
+        "Прошлый месяц",
+        "Этот квартал",
+        "Прошлый квартал",
+        "Этот год",
+        "За всё время",
+        "Произвольный",
+    ]
+
+    def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timestamp):
+        """Возвращает (from, to) для выбранного пресета.
+        Текущая дата берётся как max даты в данных, чтобы пресет «вчера»
+        работал даже если данные исторические."""
+        today = pd.Timestamp(data_max).normalize()
+        if name == "Сегодня":
+            return (today, today)
+        if name == "Вчера":
+            y = today - pd.Timedelta(days=1)
+            return (y, y)
+        if name == "Последние 7 дней":
+            return (today - pd.Timedelta(days=6), today)
+        if name == "Последние 30 дней":
+            return (today - pd.Timedelta(days=29), today)
+        if name == "Последние 90 дней":
+            return (today - pd.Timedelta(days=89), today)
+        if name == "Этот месяц":
+            return (today.replace(day=1), today)
+        if name == "Прошлый месяц":
+            first = today.replace(day=1)
+            last_prev = first - pd.Timedelta(days=1)
+            return (last_prev.replace(day=1), last_prev)
+        if name == "Этот квартал":
+            q = (today.month - 1) // 3
+            return (pd.Timestamp(today.year, q * 3 + 1, 1), today)
+        if name == "Прошлый квартал":
+            q = (today.month - 1) // 3
+            if q == 0:
+                start = pd.Timestamp(today.year - 1, 10, 1)
+                end = pd.Timestamp(today.year - 1, 12, 31)
+            else:
+                start = pd.Timestamp(today.year, (q - 1) * 3 + 1, 1)
+                end = pd.Timestamp(today.year, q * 3, 1) - pd.Timedelta(days=1)
+                # end = последний день предыдущего квартала
+                end = pd.Timestamp(today.year, q * 3 + 1, 1) - pd.Timedelta(days=1)
+                start = pd.Timestamp(today.year, (q - 1) * 3 + 1, 1)
+            return (start, end)
+        if name == "Этот год":
+            return (pd.Timestamp(today.year, 1, 1), today)
+        # «За всё время» и fallback
+        return (pd.Timestamp(data_min), pd.Timestamp(data_max))
+
+    preset = st.selectbox(
         "Период",
-        value=(overall_min, overall_max),
-        min_value=overall_min, max_value=overall_max,
-        format="DD.MM.YYYY",
+        PERIOD_PRESETS,
+        index=PERIOD_PRESETS.index("За всё время"),
+        key="period_preset",
     )
-    if isinstance(period, tuple) and len(period) == 2:
-        d_from, d_to = pd.Timestamp(period[0]), pd.Timestamp(period[1])
+
+    if preset == "Произвольный":
+        period = st.date_input(
+            "Диапазон",
+            value=(overall_min, overall_max),
+            min_value=overall_min, max_value=overall_max,
+            format="DD.MM.YYYY",
+            key="period_custom",
+        )
+        if isinstance(period, tuple) and len(period) == 2:
+            d_from, d_to = pd.Timestamp(period[0]), pd.Timestamp(period[1])
+        else:
+            d_from, d_to = pd.Timestamp(overall_min), pd.Timestamp(overall_max)
     else:
-        d_from, d_to = pd.Timestamp(overall_min), pd.Timestamp(overall_max)
+        d_from, d_to = _compute_preset_range(
+            preset, pd.Timestamp(overall_max), pd.Timestamp(overall_min)
+        )
+        # клампим к доступным данным
+        d_from = max(d_from, pd.Timestamp(overall_min))
+        d_to = min(d_to, pd.Timestamp(overall_max))
+        st.caption(f"📅 {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}")
 
     attribution_pct = st.slider(
         "Атрибуция платного трафика, %",
@@ -454,7 +544,8 @@ c1.markdown(kpi_card(
 c2.markdown(kpi_card(
     "Доход (оплаты)",
     fmt_rub(ck.revenue),
-    f"{ck.orders_paid:,} оплат".replace(",", " "), kind="green",
+    f"{ck.orders_paid:,} {plural_ru(ck.orders_paid, 'оплата', 'оплаты', 'оплат')}".replace(",", " "),
+    kind="green",
 ), unsafe_allow_html=True)
 romi_kind = "up" if net >= 0 else "down"
 romi_arrow = "↑" if net >= 0 else "↓"
@@ -478,7 +569,7 @@ st.markdown("<div style='height: 0.8rem'></div>", unsafe_allow_html=True)
 c5, c6, c7, c8 = st.columns(4)
 c5.markdown(kpi_card("CAC", fmt_rub(cac), "стоимость нового клиента"), unsafe_allow_html=True)
 c6.markdown(kpi_card("ARPU", fmt_rub(ck.arpu), "доход на клиента"), unsafe_allow_html=True)
-c7.markdown(kpi_card("Средний чек", fmt_rub(ck.avg_check), f"{ck.avg_orders_per_client:.2f} оплат/клиент"), unsafe_allow_html=True)
+c7.markdown(kpi_card("Средний чек", fmt_rub(ck.avg_check), f"{ck.avg_orders_per_client:.2f} оплат на клиента"), unsafe_allow_html=True)
 ltv_kind = "up" if ltv_cac >= 1 else "down"
 ltv_color = "green" if ltv_cac >= 1 else "red"
 c8.markdown(kpi_card(
@@ -677,7 +768,7 @@ with col_mid:
                 border:1px solid {PALETTE['border']};'>
                 <div>
                   <div style='font-weight:600; color:{PALETTE['text']};'>{name}</div>
-                  <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{email} · {row['orders']} оплат</div>
+                  <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{email} · {row['orders']} {plural_ru(row['orders'], 'оплата', 'оплаты', 'оплат')}</div>
                 </div>
                 <div style='text-align:right;'>
                   <div style='font-weight:700; color:{PALETTE['green']};'>{fmt_rub(row['total_paid'])}</div>
@@ -717,8 +808,12 @@ with col_right:
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        f"**{old_orders_cnt:,}** повторных · **{new_orders_cnt:,}** новых оплат  \n"
-        f"Для хостинга 60%+ — сильный показатель удержания.".replace(",", " ")
+        (
+            f"**{old_orders_cnt:,}** {plural_ru(old_orders_cnt, 'повторная', 'повторных', 'повторных')} · "
+            f"**{new_orders_cnt:,}** {plural_ru(new_orders_cnt, 'новая', 'новых', 'новых')} "
+            f"{plural_ru(new_orders_cnt + old_orders_cnt, 'оплата', 'оплаты', 'оплат')}  \n"
+            f"Для хостинга 60%+ — сильный показатель удержания."
+        ).replace(",", " ")
     )
 
 
