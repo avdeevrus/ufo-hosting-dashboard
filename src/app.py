@@ -343,6 +343,39 @@ st.markdown(
         border-color: #8c959f !important; background: #fafbfc !important;
     }}
 
+    /* Плавающий триггер «Период анализа» — всегда виден в правом верхнем углу.
+       Streamlit-header имеет z-index 999990, ставим триггер ПОД его уровень
+       по вертикали (top: 3.2rem) и ВЫШЕ по z-index для модальных диалогов. */
+    .st-key-period_picker {{
+        position: fixed !important;
+        top: 3.2rem !important;
+        right: 1rem !important;
+        z-index: 999991 !important;
+        width: 220px !important;
+        padding: 0 !important;
+        background: transparent !important;
+    }}
+    /* Внутренний триггер popover внутри плавающего контейнера */
+    .st-key-period_picker [data-testid="stPopoverButton"] {{
+        background: rgba(255, 255, 255, 0.98) !important;
+        -webkit-backdrop-filter: blur(10px) saturate(180%);
+        backdrop-filter: blur(10px) saturate(180%);
+        box-shadow: 0 4px 14px rgba(0,0,0,0.10) !important;
+        font-weight: 600 !important;
+    }}
+    .st-key-period_picker [data-testid="stPopoverButton"]:hover {{
+        background: #ffffff !important;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.13) !important;
+    }}
+    /* Popover-меню (живёт в портале) — поверх всего, включая header */
+    [data-testid="stPopoverBody"] {{ z-index: 999992 !important; }}
+    /* На мобильных триггер чуть уже и ближе к краю */
+    @media (max-width: 720px) {{
+        .st-key-period_picker {{
+            width: 180px !important; right: 0.6rem !important; top: 3rem !important;
+        }}
+    }}
+
     /* Авто-инсайты */
     .insight-row {{ display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 1rem; }}
     .insight-pill {{
@@ -1081,34 +1114,26 @@ def _compute_compare_range(preset: str, cur_from: pd.Timestamp, cur_to: pd.Times
     return prev_from, prev_to, cur_label, prev_label
 
 
-# Hero с интегрированным выбором периода (как у Я.Директ)
-hcol_left, hcol_right = st.columns([2.6, 1.6])
-with hcol_left:
-    st.markdown(
-        """
-        <div class="ufo-hero-text">
-          <h1>Окупаемость рекламы</h1>
-          <div class="ufo-sub">UFO Hosting · Яндекс.Директ · LTV / CAC / Retention</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with hcol_right:
-    # Текущий выбор хранится в session_state, чтобы popover был stateless
-    if "period_preset" not in st.session_state:
-        st.session_state["period_preset"] = "За всё время"
-    preset = st.session_state["period_preset"]
+# Hero: заголовок на всю ширину; триггер периода — отдельный плавающий контейнер
+st.markdown(
+    """
+    <div class="ufo-hero-text">
+      <h1>Окупаемость рекламы</h1>
+      <div class="ufo-sub">UFO Hosting · Яндекс.Директ · LTV / CAC / Retention</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # Подпись над popover — даёт визуальную привязку «вы сейчас смотрите такой-то период»
-    st.markdown(
-        f'<div style="color:{PALETTE["muted"]}; font-size:0.7rem; '
-        f'font-weight:600; letter-spacing:0.5px; text-transform:uppercase; '
-        f'margin: 0.15rem 0 0.2rem;">📅 Период</div>',
-        unsafe_allow_html=True,
-    )
+# Текущий выбор хранится в session_state, чтобы popover был stateless
+if "period_preset" not in st.session_state:
+    st.session_state["period_preset"] = "За всё время"
+preset = st.session_state["period_preset"]
 
-    # Триггер popover с текущим выбранным периодом
-    with st.popover(preset, use_container_width=True):
+# Плавающий триггер периода: через st.container(key=...) даём ему CSS-якорь,
+# чтобы position:fixed в правом верхнем углу — всегда виден при скролле.
+with st.container(key="period_picker"):
+    with st.popover(f"📅 {preset}", use_container_width=True):
         # Группы пресетов
         for group_title, group_items in PERIOD_GROUPS:
             st.markdown(
@@ -1128,28 +1153,46 @@ with hcol_right:
                     st.session_state.pop("period_custom_active", None)
                     st.rerun()
 
-        # Произвольный период
+        # Произвольный период — 2 поля, автоприменение без кнопки
         st.markdown(
             '<div class="period-group-title">ПРОИЗВОЛЬНЫЙ ПЕРИОД</div>',
             unsafe_allow_html=True,
         )
-        _pc_default = st.session_state.get(
+        _pc_value = st.session_state.get(
             "period_custom_value", (overall_min, overall_max)
         )
-        custom_range = st.date_input(
-            "Диапазон дат",
-            value=_pc_default,
-            min_value=overall_min, max_value=overall_max,
-            format="DD.MM.YYYY",
-            key="period_custom_input",
-            label_visibility="collapsed",
-        )
-        if st.button("Применить", use_container_width=True, type="primary", key="period_custom_apply"):
-            if isinstance(custom_range, tuple) and len(custom_range) == 2:
-                st.session_state["period_preset"] = "Произвольный"
-                st.session_state["period_custom_value"] = custom_range
-                st.session_state["period_custom_active"] = True
-                st.rerun()
+        dcol_from, dcol_to = st.columns(2)
+        with dcol_from:
+            cf_val = st.date_input(
+                "С даты",
+                value=_pc_value[0],
+                min_value=overall_min, max_value=overall_max,
+                format="DD.MM.YYYY",
+                key="period_custom_from",
+            )
+        with dcol_to:
+            ct_val = st.date_input(
+                "По дату",
+                value=_pc_value[1],
+                min_value=overall_min, max_value=overall_max,
+                format="DD.MM.YYYY",
+                key="period_custom_to",
+            )
+        # Автоприменение: если оба поля валидны и пользователь изменил хоть одно
+        # относительно сохранённого — переключаемся на «Произвольный».
+        if cf_val and ct_val and cf_val <= ct_val:
+            new_value = (cf_val, ct_val)
+            if new_value != _pc_value or not st.session_state.get("period_custom_active"):
+                if new_value != (overall_min, overall_max) or st.session_state.get("period_custom_active"):
+                    # Применяем только если пользователь реально изменил даты
+                    # (а не просто открыл popover с дефолтным диапазоном)
+                    if new_value != _pc_value:
+                        st.session_state["period_preset"] = "Произвольный"
+                        st.session_state["period_custom_value"] = new_value
+                        st.session_state["period_custom_active"] = True
+                        st.rerun()
+        elif cf_val and ct_val and cf_val > ct_val:
+            st.caption(f"⚠️ «С даты» позже, чем «По дату» — поменяйте порядок.")
 
 # Расчёт фактических дат по выбранному пресету
 if preset == "Произвольный" and st.session_state.get("period_custom_active"):
