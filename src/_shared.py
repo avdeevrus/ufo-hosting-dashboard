@@ -179,19 +179,40 @@ def password_token(pwd: str) -> str:
 
 
 def check_password() -> bool:
-    """Password-gate с persistence через URL-token. Возвращает True если доступ разрешён."""
+    """Password-gate с persistence через URL-token.
+
+    Стратегия многоуровневая (важно для multi-page Streamlit, где
+    session_state может теряться при рестарте сервера / переключении страниц):
+      1. session_state["auth_ok"] — самое быстрое, не требует I/O
+      2. URL query-param ?t=<token> — переживает reload, переключение страниц
+      3. Иначе — login-экран
+
+    После успешного входа token дублируется в URL ВСЕГДА (даже если уже там),
+    чтобы навигация Streamlit'а не могла его случайно сорвать.
+    """
     expected = os.environ.get("APP_PASSWORD")
     if not expected:
         return True
     expected_t = password_token(expected)
 
+    # 1. Уже залогинены в этой сессии
     if st.session_state.get("auth_ok"):
+        # Гарантируем что URL-токен всегда на месте — на случай если
+        # st.navigation/rerun сорвал query при переключении страниц.
+        try:
+            if st.query_params.get("t") != expected_t:
+                st.query_params["t"] = expected_t
+        except Exception:
+            pass
         return True
+
+    # 2. Persistent URL-токен
     url_token = st.query_params.get("t")
     if url_token == expected_t:
         st.session_state["auth_ok"] = True
         return True
 
+    # 3. Login-экран
     st.markdown(
         """
         <style>
@@ -267,10 +288,16 @@ def reset_all_caches(*, clear_quality_files: bool = True) -> dict:
     """Сбрасывает Streamlit-кэши (data + resource) и опционально удаляет
     диск-кэш аналитики качества. Возвращает счётчик удалённых файлов.
 
-    Используется кнопкой «Сбросить кэш» в сайдбаре.
+    Используется кнопкой «Сбросить кэш» в сайдбаре. НЕ сбрасывает
+    login-state (auth_ok / URL token) — пользователь не должен logout-иться
+    при очистке кэша.
     """
+    # Сохраняем login state до очистки
+    _auth_ok = st.session_state.get("auth_ok")
     st.cache_data.clear()
     st.cache_resource.clear()
+    if _auth_ok:
+        st.session_state["auth_ok"] = _auth_ok
     removed = 0
     if clear_quality_files and QUALITY_CACHE_DIR.exists():
         for fname in QUALITY_CACHE_FILES.values():

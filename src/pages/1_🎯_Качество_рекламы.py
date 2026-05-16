@@ -76,11 +76,14 @@ with st.sidebar:
             "Кэширует CTR/CPC/конверсии по кампаниям, ключевикам и "
             "объявлениям. Не запрашивает повторно."
         )
+        # «За всё время» по умолчанию — собираем всю историю кампаний
+        # UFO Hosting начал Я.Директ летом 2025; 2023-01-01 = безопасная нижняя граница.
         q_from = st.date_input(
             "С даты",
-            value=pd.Timestamp.today() - pd.Timedelta(days=90),
+            value=pd.Timestamp("2023-01-01"),
             key="yd_quality_from",
             format="DD.MM.YYYY",
+            help="По умолчанию — с 1 января 2023 (вся история). Можно сузить если нужно.",
         )
         q_to = st.date_input(
             "По дату",
@@ -145,16 +148,21 @@ _q_camp, _q_camp_meta = load_quality_cache("campaign_quality")
 _q_kw, _q_kw_meta = load_quality_cache("keywords")
 _q_ad, _q_ad_meta = load_quality_cache("ads_creatives")
 
-# Если кэша нет, а API подключён — автозагрузка за последние 90 дней.
+# Если кэша нет, а API подключён — автозагрузка ЗА ВСЁ ВРЕМЯ.
+# 2023-01-01 = безопасная нижняя граница (Я.Директ UFO Hosting начался летом 2025).
 # Это даёт «Roistat-like» поведение: открыл страницу → кампании уже видны.
 # При неудаче запоминаем флаг чтобы не зацикливать попытки.
 _cache_empty = _q_camp.empty and _q_kw.empty and _q_ad.empty
 _auto_failed = st.session_state.get("yd_quality_auto_failed", False)
 
 if _cache_empty and _yd_creds_global and not _auto_failed:
+    auto_from = "2023-01-01"
+    auto_to = pd.Timestamp.today().strftime("%Y-%m-%d")
+    auto_period = (auto_from, auto_to)
+
     with st.spinner(
-        "Подтягиваю кампании из Яндекс.Директа за последние 90 дней… "
-        "(30-60 секунд, делается один раз — дальше кэшируется)"
+        f"Подтягиваю всю историю кампаний из Я.Директа ({auto_from} → {auto_to})… "
+        f"1-3 минуты при первой загрузке, дальше кэшируется."
     ):
         try:
             from yandex_direct import (
@@ -165,20 +173,41 @@ if _cache_empty and _yd_creds_global and not _auto_failed:
                 token=_yd_creds_global.token,
                 client_login=_yd_creds_global.client_login,
             )
-            auto_from = (pd.Timestamp.today() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
-            auto_to = pd.Timestamp.today().strftime("%Y-%m-%d")
-            auto_period = (auto_from, auto_to)
+            # Каждый отчёт ловим отдельно — чтобы падение одного
+            # не лишало пользователя двух других.
+            errors_summary = []
+            for kind, fetcher in (
+                ("campaign_quality", fetch_campaign_quality),
+                ("keywords", fetch_keyword_report),
+                ("ads_creatives", fetch_ad_report),
+            ):
+                try:
+                    df = fetcher(auto_creds, *auto_period)
+                    save_quality_cache(kind, df, auto_period)
+                except Exception as ex:
+                    errors_summary.append((kind, str(ex)))
 
-            cq = fetch_campaign_quality(auto_creds, *auto_period)
-            save_quality_cache("campaign_quality", cq, auto_period)
-            kw = fetch_keyword_report(auto_creds, *auto_period)
-            save_quality_cache("keywords", kw, auto_period)
-            ad = fetch_ad_report(auto_creds, *auto_period)
-            save_quality_cache("ads_creatives", ad, auto_period)
+            if errors_summary:
+                # Если ВСЕ три упали — авто-режим не работает, нужен пользовательский фикс
+                if len(errors_summary) == 3:
+                    raise RuntimeError(errors_summary[0][1])
+                # Иначе показываем что не загрузилось, но даём увидеть остальное
+                for kind, msg in errors_summary:
+                    st.warning(f"Не удалось загрузить «{kind}»: {msg}", icon="⚠️")
             st.rerun()
         except Exception as e:
             st.session_state["yd_quality_auto_failed"] = True
-            st.error(f"Не получилось подтянуть аналитику автоматически: {e}")
+            st.error(
+                f"❌ **Подключение к Яндекс.Директ API упало**\n\n"
+                f"```\n{e}\n```\n\n"
+                f"**Возможные причины:**\n"
+                f"- `YANDEX_DIRECT_TOKEN` истёк или неверен → получите новый на "
+                f"https://oauth.yandex.ru/\n"
+                f"- В OAuth-приложении нет права «Использование API Директа» (ошибка 53)\n"
+                f"- Агентский аккаунт → добавьте `YANDEX_DIRECT_CLIENT_LOGIN` в Secrets (ошибка 8800)\n"
+                f"- API ещё не модерирован (ошибка 58) → "
+                f"direct.yandex.ru → Инструменты → Управление доступом → API → подать заявку"
+            )
 
 if _cache_empty:
     if _yd_creds_global is None:
