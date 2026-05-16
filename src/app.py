@@ -266,6 +266,83 @@ st.markdown(
     /* Уменьшаем gap между колонками */
     [data-testid="stHorizontalBlock"] {{ gap: 0.7rem !important; }}
 
+    /* Popover «Период» — стильное меню в духе Я.Метрики */
+    .period-group-title {{
+        color: {PALETTE['muted']}; font-size: 0.66rem; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.8px;
+        margin: 0.7rem 0 0.25rem 0.15rem;
+    }}
+    .period-group-title:first-of-type {{ margin-top: 0; }}
+
+    /* Тело popover-меню (живёт в портале, селектор прямой) */
+    [data-testid="stPopoverBody"] {{
+        padding: 0.85rem 0.85rem !important; min-width: 280px;
+        background: #ffffff !important;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06) !important;
+        border: 1px solid {PALETTE['border']} !important;
+        border-radius: 10px !important;
+        max-height: 78vh !important; overflow-y: auto !important;
+    }}
+    /* Сжимаем вертикальный gap между кнопками */
+    [data-testid="stPopoverBody"] [data-testid="stVerticalBlock"] {{ gap: 0 !important; }}
+    [data-testid="stPopoverBody"] [data-testid="stElementContainer"] {{ margin-bottom: 0 !important; }}
+
+    /* Кнопки-пресеты — лево-выровненные, компактные */
+    [data-testid="stPopoverBody"] [data-testid="stBaseButton-tertiary"],
+    [data-testid="stPopoverBody"] [data-testid="stBaseButton-primary"] {{
+        text-align: left !important; justify-content: flex-start !important;
+        padding: 0.4rem 0.75rem !important; border-radius: 7px !important;
+        font-weight: 500 !important; font-size: 0.93rem !important;
+        border: 1px solid transparent !important; background: transparent !important;
+        color: {PALETTE['text']} !important; box-shadow: none !important;
+        min-height: 36px !important; height: auto !important;
+        width: 100% !important;
+        display: flex !important; align-items: center !important;
+    }}
+    /* Растягиваем внутренние обёртки и лево-выравниваем сам текст */
+    [data-testid="stPopoverBody"] [data-testid^="stBaseButton-"] > div,
+    [data-testid="stPopoverBody"] [data-testid^="stBaseButton-"] > div > span {{
+        flex: 1 1 auto !important; text-align: left !important;
+        display: block !important;
+    }}
+    [data-testid="stPopoverBody"] [data-testid^="stBaseButton-"] [data-testid="stMarkdownContainer"] {{
+        text-align: left !important; width: 100% !important;
+    }}
+    [data-testid="stPopoverBody"] [data-testid^="stBaseButton-"] [data-testid="stMarkdownContainer"] p {{
+        text-align: left !important; margin: 0 !important;
+    }}
+    [data-testid="stPopoverBody"] [data-testid="stBaseButton-tertiary"]:hover,
+    [data-testid="stPopoverBody"] [data-testid="stBaseButton-primary"]:hover {{
+        background: #f1f5f9 !important; border-color: transparent !important;
+        color: {PALETTE['text']} !important;
+    }}
+    /* Активный пресет (primary тип) — мягкая серая подсветка */
+    [data-testid="stPopoverBody"] [data-testid="stBaseButton-primary"] {{
+        background: #eef2f6 !important; font-weight: 600 !important;
+    }}
+    /* Кнопка «Применить» в самом низу — выделена «фирменно» (тёмная) */
+    [data-testid="stPopoverBody"] [data-testid="stElementContainer"]:last-of-type [data-testid="stBaseButton-primary"] {{
+        background: {PALETTE['text']} !important; color: #fff !important;
+        text-align: center !important; justify-content: center !important;
+        font-weight: 600 !important; margin-top: 0.6rem !important;
+        min-height: 40px !important;
+    }}
+    [data-testid="stPopoverBody"] [data-testid="stElementContainer"]:last-of-type [data-testid="stBaseButton-primary"]:hover {{
+        background: #1a1f24 !important; color: #fff !important;
+    }}
+
+    /* Триггер popover — стильная белая кнопка справа в Hero */
+    [data-testid="stPopoverButton"] {{
+        background: #ffffff !important; border: 1px solid {PALETTE['border']} !important;
+        color: {PALETTE['text']} !important; font-weight: 500 !important;
+        padding: 0.5rem 0.95rem !important; border-radius: 8px !important;
+        justify-content: space-between !important;
+        min-height: 42px !important;
+    }}
+    [data-testid="stPopoverButton"]:hover {{
+        border-color: #8c959f !important; background: #fafbfc !important;
+    }}
+
     /* Авто-инсайты */
     .insight-row {{ display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 1rem; }}
     .insight-pill {{
@@ -845,8 +922,11 @@ PERIOD_PRESETS = [
     "Сегодня",
     "Вчера",
     "Последние 7 дней",
+    "Последние 14 дней",
     "Последние 30 дней",
     "Последние 90 дней",
+    "Эта неделя",
+    "Прошлая неделя",
     "Этот месяц",
     "Прошлый месяц",
     "Этот квартал",
@@ -854,6 +934,20 @@ PERIOD_PRESETS = [
     "Этот год",
     "За всё время",
     "Произвольный",
+]
+
+# Группировка пресетов для popover-выбора в стиле «Свой диапазон»
+PERIOD_GROUPS = [
+    ("СКОЛЬЗЯЩЕЕ ОКНО", [
+        "Последние 7 дней", "Последние 14 дней",
+        "Последние 30 дней", "Последние 90 дней",
+    ]),
+    ("КАЛЕНДАРЬ", [
+        "Сегодня", "Вчера", "Эта неделя", "Прошлая неделя",
+        "Этот месяц", "Прошлый месяц",
+        "Этот квартал", "Прошлый квартал", "Этот год",
+        "За всё время",
+    ]),
 ]
 
 
@@ -866,10 +960,21 @@ def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timest
         return (y, y)
     if name == "Последние 7 дней":
         return (today - pd.Timedelta(days=6), today)
+    if name == "Последние 14 дней":
+        return (today - pd.Timedelta(days=13), today)
     if name == "Последние 30 дней":
         return (today - pd.Timedelta(days=29), today)
     if name == "Последние 90 дней":
         return (today - pd.Timedelta(days=89), today)
+    if name == "Эта неделя":
+        # Понедельник = 0
+        week_start = today - pd.Timedelta(days=today.weekday())
+        return (week_start, today)
+    if name == "Прошлая неделя":
+        this_week_start = today - pd.Timedelta(days=today.weekday())
+        last_week_end = this_week_start - pd.Timedelta(days=1)
+        last_week_start = last_week_end - pd.Timedelta(days=6)
+        return (last_week_start, last_week_end)
     if name == "Этот месяц":
         return (today.replace(day=1), today)
     if name == "Прошлый месяц":
@@ -914,6 +1019,21 @@ def _compute_compare_range(preset: str, cur_from: pd.Timestamp, cur_to: pd.Times
     if preset == "Вчера":
         prev = cur_from - pd.Timedelta(days=1)
         return prev, prev, f"Вчера · {cur_from:%d.%m.%Y}", f"Позавчера · {prev:%d.%m.%Y}"
+
+    # Недельные — vs аналогичный отрезок прошлой недели
+    if preset == "Эта неделя":
+        prev_from = cur_from - pd.Timedelta(days=7)
+        prev_to = prev_from + (cur_to - cur_from)
+        return (prev_from, prev_to,
+                f"{cur_from:%d.%m} – {cur_to:%d.%m.%Y}",
+                f"{prev_from:%d.%m} – {prev_to:%d.%m.%Y}")
+
+    if preset == "Прошлая неделя":
+        prev_from = cur_from - pd.Timedelta(days=7)
+        prev_to = cur_to - pd.Timedelta(days=7)
+        return (prev_from, prev_to,
+                f"{cur_from:%d.%m} – {cur_to:%d.%m.%Y}",
+                f"{prev_from:%d.%m} – {prev_to:%d.%m.%Y}")
 
     # Календарные «прошлые» — сравниваем с предыдущим полным календарным периодом
     if preset == "Прошлый месяц":
@@ -974,26 +1094,67 @@ with hcol_left:
         unsafe_allow_html=True,
     )
 with hcol_right:
-    preset = st.selectbox(
-        "📅 Период анализа",
-        PERIOD_PRESETS,
-        index=PERIOD_PRESETS.index("За всё время"),
-        key="period_preset",
-        help="Готовые пресеты как у Яндекс.Директа. «Произвольный» откроет ручной выбор дат.",
+    # Текущий выбор хранится в session_state, чтобы popover был stateless
+    if "period_preset" not in st.session_state:
+        st.session_state["period_preset"] = "За всё время"
+    preset = st.session_state["period_preset"]
+
+    # Подпись над popover — даёт визуальную привязку «вы сейчас смотрите такой-то период»
+    st.markdown(
+        f'<div style="color:{PALETTE["muted"]}; font-size:0.7rem; '
+        f'font-weight:600; letter-spacing:0.5px; text-transform:uppercase; '
+        f'margin: 0.15rem 0 0.2rem;">📅 Период</div>',
+        unsafe_allow_html=True,
     )
 
-if preset == "Произвольный":
-    period = st.date_input(
-        "Диапазон дат",
-        value=(overall_min, overall_max),
-        min_value=overall_min, max_value=overall_max,
-        format="DD.MM.YYYY",
-        key="period_custom",
-    )
-    if isinstance(period, tuple) and len(period) == 2:
-        d_from, d_to = pd.Timestamp(period[0]), pd.Timestamp(period[1])
-    else:
-        d_from, d_to = pd.Timestamp(overall_min), pd.Timestamp(overall_max)
+    # Триггер popover с текущим выбранным периодом
+    with st.popover(preset, use_container_width=True):
+        # Группы пресетов
+        for group_title, group_items in PERIOD_GROUPS:
+            st.markdown(
+                f'<div class="period-group-title">{group_title}</div>',
+                unsafe_allow_html=True,
+            )
+            for item in group_items:
+                active = item == preset
+                if st.button(
+                    item,
+                    key=f"pp_{item}",
+                    use_container_width=True,
+                    type=("primary" if active else "tertiary"),
+                ):
+                    st.session_state["period_preset"] = item
+                    # сбрасываем кастомный диапазон, чтобы не висел рядом
+                    st.session_state.pop("period_custom_active", None)
+                    st.rerun()
+
+        # Произвольный период
+        st.markdown(
+            '<div class="period-group-title">ПРОИЗВОЛЬНЫЙ ПЕРИОД</div>',
+            unsafe_allow_html=True,
+        )
+        _pc_default = st.session_state.get(
+            "period_custom_value", (overall_min, overall_max)
+        )
+        custom_range = st.date_input(
+            "Диапазон дат",
+            value=_pc_default,
+            min_value=overall_min, max_value=overall_max,
+            format="DD.MM.YYYY",
+            key="period_custom_input",
+            label_visibility="collapsed",
+        )
+        if st.button("Применить", use_container_width=True, type="primary", key="period_custom_apply"):
+            if isinstance(custom_range, tuple) and len(custom_range) == 2:
+                st.session_state["period_preset"] = "Произвольный"
+                st.session_state["period_custom_value"] = custom_range
+                st.session_state["period_custom_active"] = True
+                st.rerun()
+
+# Расчёт фактических дат по выбранному пресету
+if preset == "Произвольный" and st.session_state.get("period_custom_active"):
+    pc = st.session_state.get("period_custom_value", (overall_min, overall_max))
+    d_from, d_to = pd.Timestamp(pc[0]), pd.Timestamp(pc[1])
 else:
     d_from, d_to = _compute_preset_range(
         preset, pd.Timestamp(overall_max), pd.Timestamp(overall_min)
