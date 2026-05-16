@@ -106,20 +106,25 @@ with st.sidebar:
                 )
                 period_str = (str(q_from), str(q_to))
 
-                with st.spinner("1/3 кампании…"):
+                with st.status(f"📥 Тяну Я.Директ за {period_str[0]} – {period_str[1]}…",
+                               expanded=True) as st_status:
+                    st_status.update(label="📥 [1/3] Кампании (CTR, CPC, конверсии)…",
+                                     state="running")
                     cq = fetch_campaign_quality(creds_q, *period_str)
                     save_quality_cache("campaign_quality", cq, period_str)
-                with st.spinner("2/3 ключевики…"):
+                    st.write(f"✅ Кампании: {len(cq)} строк")
+
+                    st_status.update(label="📥 [2/3] Ключевые слова…", state="running")
                     kw = fetch_keyword_report(creds_q, *period_str)
                     save_quality_cache("keywords", kw, period_str)
-                with st.spinner("3/3 объявления…"):
+                    st.write(f"✅ Ключевые слова: {len(kw)} строк")
+
+                    st_status.update(label="📥 [3/3] Объявления (креативы)…", state="running")
                     ad = fetch_ad_report(creds_q, *period_str)
                     save_quality_cache("ads_creatives", ad, period_str)
+                    st.write(f"✅ Объявления: {len(ad)} строк")
 
-                st.success(
-                    f"Кампании: {len(cq)} · Ключевики: {len(kw)} · "
-                    f"Объявления: {len(ad)}"
-                )
+                    st_status.update(label="✅ Все 3 отчёта загружены", state="complete")
                 st.rerun()
             except Exception as e:
                 st.error(str(e))
@@ -160,10 +165,12 @@ if _cache_empty and _yd_creds_global and not _auto_failed:
     auto_to = pd.Timestamp.today().strftime("%Y-%m-%d")
     auto_period = (auto_from, auto_to)
 
-    with st.spinner(
-        f"Подтягиваю всю историю кампаний из Я.Директа ({auto_from} → {auto_to})… "
-        f"1-3 минуты при первой загрузке, дальше кэшируется."
-    ):
+    # st.status — поэтапный progress: пользователь видит что именно тянется,
+    # а не просто крутящийся спиннер на 3 минуты.
+    with st.status(
+        f"📥 Тяну всю историю Я.Директа ({auto_from} → {auto_to})…",
+        expanded=True,
+    ) as status:
         try:
             from yandex_direct import (
                 DirectCredentials,
@@ -173,30 +180,36 @@ if _cache_empty and _yd_creds_global and not _auto_failed:
                 token=_yd_creds_global.token,
                 client_login=_yd_creds_global.client_login,
             )
-            # Каждый отчёт ловим отдельно — чтобы падение одного
-            # не лишало пользователя двух других.
             errors_summary = []
-            for kind, fetcher in (
-                ("campaign_quality", fetch_campaign_quality),
-                ("keywords", fetch_keyword_report),
-                ("ads_creatives", fetch_ad_report),
-            ):
+            stages = [
+                ("Кампании (CTR, CPC, конверсии, отказы)", "campaign_quality", fetch_campaign_quality),
+                ("Ключевые слова (с match-type)",          "keywords",          fetch_keyword_report),
+                ("Объявления (креативы)",                  "ads_creatives",     fetch_ad_report),
+            ]
+            for i, (label, kind, fetcher) in enumerate(stages, start=1):
+                status.update(label=f"📥 [{i}/3] {label}…", state="running")
                 try:
                     df = fetcher(auto_creds, *auto_period)
                     save_quality_cache(kind, df, auto_period)
+                    st.write(f"✅ {label}: {len(df)} строк")
                 except Exception as ex:
                     errors_summary.append((kind, str(ex)))
+                    st.write(f"⚠️ {label}: {ex}")
 
-            if errors_summary:
-                # Если ВСЕ три упали — авто-режим не работает, нужен пользовательский фикс
-                if len(errors_summary) == 3:
-                    raise RuntimeError(errors_summary[0][1])
-                # Иначе показываем что не загрузилось, но даём увидеть остальное
-                for kind, msg in errors_summary:
-                    st.warning(f"Не удалось загрузить «{kind}»: {msg}", icon="⚠️")
+            if errors_summary and len(errors_summary) == 3:
+                status.update(label="❌ Не удалось загрузить ни один отчёт", state="error")
+                raise RuntimeError(errors_summary[0][1])
+            elif errors_summary:
+                status.update(
+                    label=f"⚠️ Загружено частично ({3 - len(errors_summary)}/3 отчётов)",
+                    state="complete",
+                )
+            else:
+                status.update(label="✅ Готово — все 3 отчёта загружены", state="complete")
             st.rerun()
         except Exception as e:
             st.session_state["yd_quality_auto_failed"] = True
+            status.update(label="❌ Подключение к Я.Директ упало", state="error")
             st.error(
                 f"❌ **Подключение к Яндекс.Директ API упало**\n\n"
                 f"```\n{e}\n```\n\n"

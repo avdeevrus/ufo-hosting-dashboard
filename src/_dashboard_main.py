@@ -111,6 +111,28 @@ if not _check_password():
 
 
 # ============================================================
+#                       Progress-индикатор
+# ============================================================
+# Виден сразу после ввода пароля — пользователь не смотрит на пустой экран,
+# пока бэкенд парсит CSV/XLSX и считает метрики. Обновляется на каждом этапе
+# и автоматически убирается в конце скрипта.
+_progress_placeholder = st.empty()
+
+
+def _progress(stage: str, pct: int) -> None:
+    """Обновляет видимый прогресс-бар. pct: 0-100."""
+    _progress_placeholder.progress(pct / 100, text=f"⏳ {stage}")
+
+
+def _progress_done() -> None:
+    """Убирает прогресс-бар. Вызывается когда вся загрузка завершена."""
+    _progress_placeholder.empty()
+
+
+_progress("Запускаю дашборд…", 5)
+
+
+# ============================================================
 #                       Стили
 # ============================================================
 
@@ -856,7 +878,9 @@ def _initial_storage_sync():
     return info
 
 
+_progress("Подключаюсь к облаку…", 15)
 _sync_info = _initial_storage_sync()
+_progress("Парсю выгрузки заказов…", 30)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1015,6 +1039,46 @@ def load_all(orders_signature: tuple, ads_signature: tuple,
     return o, a
 
 
+# ─── Кэшированные обёртки тяжёлых метрик ──────────────────────
+# Streamlit умеет хэшировать pd.DataFrame по содержимому — если
+# исходные orders/ads не меняются, переключения периода/фильтров
+# не пересчитывают эти функции заново.
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_compute_kpi(orders_df, ads_df):
+    return M.compute_kpi(orders_df, ads_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_monthly_summary(orders_df, ads_df):
+    return M.monthly_summary(orders_df, ads_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_churn_summary(orders_df):
+    return M.churn_summary(orders_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_product_mix(orders_df, by):
+    return M.product_mix(orders_df, by=by)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_pareto_summary(orders_df):
+    return M.pareto_summary(orders_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_funnel(orders_df):
+    return M.funnel(orders_df)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_mrr_by_month(orders_df):
+    return M.mrr_by_month(orders_df)
+
+
 def _file_sig(files):
     if not files:
         return tuple()
@@ -1031,6 +1095,7 @@ orders_all, ads_all = load_all(
     orders_disk_sig, ads_disk_sig,
     uploaded_orders_data, uploaded_ads_data,
 )
+_progress("Считаю когорты, LTV, churn…", 65)
 
 # Welcome-state если нет данных
 HAS_DATA = not (orders_all.empty and ads_all.empty)
@@ -1051,6 +1116,7 @@ if not HAS_DATA:
     )
     with placeholder_filters:
         st.caption("Фильтры станут доступны после загрузки данных.")
+    _progress_done()  # убираем прогресс на welcome-screen
     st.stop()
 
 
@@ -1484,7 +1550,7 @@ if not coverage.empty:
 
 # Полный KPI за выбранный период (без отрезания до overlap).
 # Пользователь видит реальные расходы на Директ за весь период работы.
-ck = M.compute_kpi(orders, ads)
+ck = _cached_compute_kpi(orders, ads)
 revenue_attr = ck.revenue * attribution_factor
 net = revenue_attr - ck.spend
 romi_pct = (net / ck.spend * 100) if ck.spend else 0.0
@@ -1497,7 +1563,7 @@ profit = ck.revenue - cogs_amount - ck.spend
 profit_margin = (profit / ck.revenue * 100) if ck.revenue > 0 else 0.0
 
 # Sparkline-тренды за месяцы (для вставки в плитки)
-_ms = M.monthly_summary(orders, ads)
+_ms = _cached_monthly_summary(orders, ads)
 spark_spend = _ms["spend"].tolist() if not _ms.empty else []
 spark_revenue = _ms["revenue"].tolist() if not _ms.empty else []
 spark_new = _ms["new_clients"].tolist() if not _ms.empty else []
@@ -1510,7 +1576,7 @@ prev_kpi = None
 prev_profit = None
 if compare_range is not None:
     _prev_from, _prev_to, _cur_label, _prev_label = compare_range
-    prev_kpi = M.compute_kpi(
+    prev_kpi = _cached_compute_kpi(
         M.filter_orders_by_period(orders_all, _prev_from, _prev_to),
         M.filter_ads_by_period(ads_all, _prev_from, _prev_to),
     )
@@ -1564,7 +1630,7 @@ st.markdown(
 
 # ─── Авто-инсайты ─────────────────────────────────────────────
 # Вычисляем churn_summary раньше — нужно и для инсайтов, и для блока «Здоровье базы» ниже.
-ch_sum_early = M.churn_summary(orders)
+ch_sum_early = _cached_churn_summary(orders)
 _insights = _generate_insights(orders, ads, ck, _ms, ch_sum_early, prev_kpi=prev_kpi)
 _render_insights(_insights)
 
@@ -1840,7 +1906,7 @@ if not _sim_base_rows.empty:
 
 st.markdown('<div class="section-title">Динамика по месяцам</div>', unsafe_allow_html=True)
 
-ms = M.monthly_summary(orders, ads)
+ms = _cached_monthly_summary(orders, ads)
 if not ms.empty:
     ms_d = ms.copy()
     ms_d["month_label"] = ms_d["month"].dt.strftime("%b %Y")
@@ -2417,7 +2483,7 @@ with st.expander("📥 Скачать данные периода"):
 #                       Footer
 # ============================================================
 
-ctx_full = M.compute_kpi(orders, ads)
+ctx_full = _cached_compute_kpi(orders, ads)
 st.markdown(
     f'<div class="ufo-footer">'
     f'Контекст всего периода: расход {fmt_rub(ctx_full.spend)} · '
@@ -2426,3 +2492,6 @@ st.markdown(
     f'</div>',
     unsafe_allow_html=True,
 )
+
+# Скрываем прогресс-бар когда страница полностью отрисована.
+_progress_done()
