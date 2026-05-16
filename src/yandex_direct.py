@@ -145,6 +145,43 @@ def _build_body(report_type: str, field_names: list[str],
     }
 
 
+def _chunked_periods(date_from: str, date_to: str, chunk_days: int = 90):
+    """Разбивает [date_from, date_to] на куски по chunk_days.
+
+    Reports API имеет лимит 92 дня для KEYWORD/AD performance reports —
+    если запросить больше, API молча обрезает или отдаёт пусто.
+    """
+    start = pd.Timestamp(date_from)
+    end = pd.Timestamp(date_to)
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + pd.Timedelta(days=chunk_days - 1), end)
+        yield cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
+        cur = chunk_end + pd.Timedelta(days=1)
+
+
+def _fetch_chunked(creds: DirectCredentials,
+                   report_type: str,
+                   field_names: list[str],
+                   date_from: str, date_to: str) -> pd.DataFrame:
+    """Тянет отчёт чанками по 90 дней и склеивает результаты в один DataFrame."""
+    chunks = []
+    for chunk_from, chunk_to in _chunked_periods(date_from, date_to, chunk_days=90):
+        body = _build_body(report_type, field_names, chunk_from, chunk_to)
+        try:
+            df = _fetch_report(creds, body)
+        except RuntimeError as e:
+            # Code 54 = «за период нет данных» — для chunk это OK, идём дальше
+            if "54" in str(e):
+                continue
+            raise
+        if not df.empty:
+            chunks.append(df)
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
+
+
 # ============================================================
 #                     Базовый отчёт по кампаниям (для расходов)
 # ============================================================
@@ -209,16 +246,13 @@ def fetch_campaign_quality(creds: DirectCredentials,
                            date_to: str) -> pd.DataFrame:
     """Расширенный отчёт по кампаниям за период: CTR, CPC, Conv, поведенческие.
 
-    Агрегат за весь период (без разрезa по дням). Возвращает DataFrame с колонками:
-    campaign, campaign_type, impressions, clicks, ctr, spend_rub, avg_cpc,
-    conversions, conversion_rate, cost_per_conversion, bounce_rate, avg_pageviews.
+    За большие периоды (>92 дней) Reports API может вернуть пусто/обрезать —
+    тянем чанками по 90 дней и склеиваем агрегатом по кампании.
     """
-    body = _build_body(
-        "CAMPAIGN_PERFORMANCE_REPORT",
-        CAMPAIGN_QUALITY_FIELDS,
-        date_from, date_to,
-    )
-    df = _fetch_report(creds, body)
+    df = _fetch_chunked(creds, "CAMPAIGN_PERFORMANCE_REPORT",
+                        CAMPAIGN_QUALITY_FIELDS, date_from, date_to)
+    if df.empty:
+        return df
     df = df.rename(columns={
         "CampaignName": "campaign",
         "CampaignType": "campaign_type",
@@ -241,6 +275,22 @@ def fetch_campaign_quality(creds: DirectCredentials,
     for col in ("impressions", "clicks", "spend_rub"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Если было несколько чанков, одна кампания может быть в нескольких строках:
+    # агрегируем суммы и пересчитываем средние.
+    group_cols = [c for c in ("campaign", "campaign_type") if c in df.columns]
+    if group_cols and len(df) > df[group_cols].drop_duplicates().shape[0]:
+        agg_sum = {c: "sum" for c in ("impressions", "clicks", "spend_rub", "conversions") if c in df.columns}
+        agg_mean = {c: "mean" for c in ("bounce_rate", "avg_pageviews") if c in df.columns}
+        df = df.groupby(group_cols, as_index=False).agg({**agg_sum, **agg_mean})
+        if "impressions" in df and "clicks" in df:
+            df["ctr"] = (df["clicks"] / df["impressions"].replace(0, pd.NA) * 100).fillna(0)
+        if "spend_rub" in df and "clicks" in df:
+            df["avg_cpc"] = (df["spend_rub"] / df["clicks"].replace(0, pd.NA)).fillna(0)
+        if "conversions" in df and "clicks" in df:
+            df["conversion_rate"] = (df["conversions"] / df["clicks"].replace(0, pd.NA) * 100).fillna(0)
+        if "conversions" in df and "spend_rub" in df:
+            df["cost_per_conversion"] = (df["spend_rub"] / df["conversions"].replace(0, pd.NA))
     return df
 
 
@@ -262,16 +312,15 @@ def fetch_keyword_report(creds: DirectCredentials,
                          date_to: str) -> pd.DataFrame:
     """Отчёт по ключевым словам за период. Агрегат, без разреза по дням.
 
-    Колонки: campaign, ad_group, criterion (ключевик/фраза), match_type,
-    impressions, clicks, ctr, spend_rub, avg_cpc,
-    conversions, conversion_rate, cost_per_conversion.
+    Reports API имеет лимит 92 дня для KEYWORD_PERFORMANCE_REPORT,
+    поэтому за период > 92 дней тянем чанками по 90 дней и склеиваем —
+    затем агрегируем по (campaign, ad_group, criterion, match_type)
+    чтобы пользователь видел сводку за весь период.
     """
-    body = _build_body(
-        "KEYWORD_PERFORMANCE_REPORT",
-        KEYWORD_REPORT_FIELDS,
-        date_from, date_to,
-    )
-    df = _fetch_report(creds, body)
+    df = _fetch_chunked(creds, "KEYWORD_PERFORMANCE_REPORT",
+                        KEYWORD_REPORT_FIELDS, date_from, date_to)
+    if df.empty:
+        return df
     df = df.rename(columns={
         "CampaignName": "campaign",
         "AdGroupName": "ad_group",
@@ -292,6 +341,22 @@ def fetch_keyword_report(creds: DirectCredentials,
     for col in ("impressions", "clicks", "spend_rub"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Агрегируем результаты чанков: ключевик может встречаться в нескольких
+    # чанках (если работал > 90 дней) — суммируем числа, средние пересчитываем.
+    group_cols = [c for c in ("campaign", "ad_group", "criterion", "match_type") if c in df.columns]
+    if group_cols:
+        agg_sum = {c: "sum" for c in ("impressions", "clicks", "spend_rub", "conversions") if c in df.columns}
+        df = df.groupby(group_cols, as_index=False).agg(agg_sum)
+        # Пересчитываем CTR / CPC / CR / CPL из суммированных
+        if "impressions" in df and "clicks" in df:
+            df["ctr"] = (df["clicks"] / df["impressions"].replace(0, pd.NA) * 100).fillna(0)
+        if "spend_rub" in df and "clicks" in df:
+            df["avg_cpc"] = (df["spend_rub"] / df["clicks"].replace(0, pd.NA)).fillna(0)
+        if "conversions" in df and "clicks" in df:
+            df["conversion_rate"] = (df["conversions"] / df["clicks"].replace(0, pd.NA) * 100).fillna(0)
+        if "conversions" in df and "spend_rub" in df:
+            df["cost_per_conversion"] = (df["spend_rub"] / df["conversions"].replace(0, pd.NA))
     return df
 
 
@@ -310,21 +375,13 @@ AD_REPORT_FIELDS = [
 def fetch_ad_report(creds: DirectCredentials,
                     date_from: str,
                     date_to: str) -> pd.DataFrame:
-    """Отчёт по объявлениям за период. Креативы для сравнения CTR / Conv.
-
-    Колонки: campaign, ad_group, ad_id, impressions, clicks, ctr, spend_rub,
-    avg_cpc, conversions, conversion_rate.
-
-    Примечание: Title/Text доступны через AD_PERFORMANCE_REPORT в виде отдельных
-    запросов; здесь мы выводим только идентификатор объявления, чтобы не
-    утяжелять выгрузку. По AdId можно перейти в интерфейс Директа.
+    """Отчёт по объявлениям за период. Тянем чанками по 90 дней
+    (лимит AD_PERFORMANCE_REPORT в Reports API) и склеиваем агрегатом.
     """
-    body = _build_body(
-        "AD_PERFORMANCE_REPORT",
-        AD_REPORT_FIELDS,
-        date_from, date_to,
-    )
-    df = _fetch_report(creds, body)
+    df = _fetch_chunked(creds, "AD_PERFORMANCE_REPORT",
+                        AD_REPORT_FIELDS, date_from, date_to)
+    if df.empty:
+        return df
     df = df.rename(columns={
         "CampaignName": "campaign",
         "AdGroupName": "ad_group",
@@ -343,4 +400,16 @@ def fetch_ad_report(creds: DirectCredentials,
     for col in ("impressions", "clicks", "spend_rub"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Агрегация чанков по (campaign, ad_group, ad_id)
+    group_cols = [c for c in ("campaign", "ad_group", "ad_id") if c in df.columns]
+    if group_cols:
+        agg_sum = {c: "sum" for c in ("impressions", "clicks", "spend_rub", "conversions") if c in df.columns}
+        df = df.groupby(group_cols, as_index=False).agg(agg_sum)
+        if "impressions" in df and "clicks" in df:
+            df["ctr"] = (df["clicks"] / df["impressions"].replace(0, pd.NA) * 100).fillna(0)
+        if "spend_rub" in df and "clicks" in df:
+            df["avg_cpc"] = (df["spend_rub"] / df["clicks"].replace(0, pd.NA)).fillna(0)
+        if "conversions" in df and "clicks" in df:
+            df["conversion_rate"] = (df["conversions"] / df["clicks"].replace(0, pd.NA) * 100).fillna(0)
     return df
