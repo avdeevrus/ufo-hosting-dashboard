@@ -89,22 +89,21 @@ st.markdown(
     h1 {{
         font-weight: 700; letter-spacing: -0.4px; color: {PALETTE['text']};
     }}
-    .ufo-hero {{
-        display: flex; align-items: flex-end; justify-content: space-between;
-        padding: 0.2rem 0 0.9rem 0;
-        border-bottom: 1px solid {PALETTE['border']};
-        margin-bottom: 1.1rem;
+    .ufo-hero-text {{
+        padding: 0.2rem 0 0 0;
     }}
-    .ufo-hero h1 {{ margin: 0; font-size: 1.65rem; color: {PALETTE['text']}; letter-spacing: -0.4px; }}
-    .ufo-hero .ufo-sub {{
+    .ufo-hero-text h1 {{
+        margin: 0; font-size: 1.65rem; color: {PALETTE['text']}; letter-spacing: -0.4px;
+    }}
+    .ufo-hero-text .ufo-sub {{
         color: {PALETTE['muted']}; font-size: 0.82rem; margin-top: 0.25rem;
         letter-spacing: 0.15px;
     }}
-    .ufo-hero .ufo-period-badge {{
-        background: {PALETTE['panel']}; color: {PALETTE['text']};
-        padding: 0.4rem 0.85rem; border-radius: 6px; font-weight: 600;
-        font-size: 0.8rem; border: 1px solid {PALETTE['border']};
-        white-space: nowrap;
+    .ufo-hero-range {{
+        color: {PALETTE['muted']}; font-size: 0.78rem;
+        padding: 0.1rem 0 0.95rem 0;
+        margin-bottom: 1.1rem;
+        border-bottom: 1px solid {PALETTE['border']};
     }}
 
     /* KPI плитки — плотнее */
@@ -204,8 +203,7 @@ st.markdown(
             flex: 1 1 calc(50% - 0.4rem) !important;
             min-width: calc(50% - 0.4rem) !important;
         }}
-        .ufo-hero {{ flex-direction: column; align-items: flex-start; gap: 0.6rem; }}
-        .ufo-hero h1 {{ font-size: 1.4rem; }}
+        .ufo-hero-text h1 {{ font-size: 1.4rem; }}
         .kpi-card .kpi-value {{ font-size: 1.35rem; }}
     }}
     @media (max-width: 560px) {{
@@ -512,110 +510,122 @@ if not HAS_DATA:
 #                       Sidebar: фильтры (после загрузки)
 # ============================================================
 
-with placeholder_filters:
-    st.markdown("**Фильтры**")
+# Вычисляем границы доступных данных
+if not orders_all.empty:
+    pay_min = orders_all["payment_date"].min().date()
+    pay_max = orders_all["payment_date"].max().date()
+else:
+    pay_min = ads_all["month"].min().date()
+    pay_max = ads_all["month"].max().date()
+if not ads_all.empty:
+    ad_min = ads_all["month"].min().date()
+    ad_max = ads_all["month"].max().date()
+else:
+    ad_min, ad_max = pay_min, pay_max
+overall_min = min(pay_min, ad_min)
+overall_max = max(pay_max, ad_max)
 
-    if not orders_all.empty:
-        pay_min = orders_all["payment_date"].min().date()
-        pay_max = orders_all["payment_date"].max().date()
-    else:
-        pay_min = ads_all["month"].min().date()
-        pay_max = ads_all["month"].max().date()
-    if not ads_all.empty:
-        ad_min = ads_all["month"].min().date()
-        ad_max = ads_all["month"].max().date()
-    else:
-        ad_min, ad_max = pay_min, pay_max
-    overall_min = min(pay_min, ad_min)
-    overall_max = max(pay_max, ad_max)
+# Пресеты периода — как у Я.Директ
+PERIOD_PRESETS = [
+    "Сегодня",
+    "Вчера",
+    "Последние 7 дней",
+    "Последние 30 дней",
+    "Последние 90 дней",
+    "Этот месяц",
+    "Прошлый месяц",
+    "Этот квартал",
+    "Прошлый квартал",
+    "Этот год",
+    "За всё время",
+    "Произвольный",
+]
 
-    # Пресеты периода — как у Я.Директ
-    PERIOD_PRESETS = [
-        "Сегодня",
-        "Вчера",
-        "Последние 7 дней",
-        "Последние 30 дней",
-        "Последние 90 дней",
-        "Этот месяц",
-        "Прошлый месяц",
-        "Этот квартал",
-        "Прошлый квартал",
-        "Этот год",
-        "За всё время",
-        "Произвольный",
-    ]
 
-    def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timestamp):
-        """Возвращает (from, to) для выбранного пресета.
-        Текущая дата берётся как max даты в данных, чтобы пресет «вчера»
-        работал даже если данные исторические."""
-        today = pd.Timestamp(data_max).normalize()
-        if name == "Сегодня":
-            return (today, today)
-        if name == "Вчера":
-            y = today - pd.Timedelta(days=1)
-            return (y, y)
-        if name == "Последние 7 дней":
-            return (today - pd.Timedelta(days=6), today)
-        if name == "Последние 30 дней":
-            return (today - pd.Timedelta(days=29), today)
-        if name == "Последние 90 дней":
-            return (today - pd.Timedelta(days=89), today)
-        if name == "Этот месяц":
-            return (today.replace(day=1), today)
-        if name == "Прошлый месяц":
-            first = today.replace(day=1)
-            last_prev = first - pd.Timedelta(days=1)
-            return (last_prev.replace(day=1), last_prev)
-        if name == "Этот квартал":
-            q = (today.month - 1) // 3
-            return (pd.Timestamp(today.year, q * 3 + 1, 1), today)
-        if name == "Прошлый квартал":
-            q = (today.month - 1) // 3
-            if q == 0:
-                start = pd.Timestamp(today.year - 1, 10, 1)
-                end = pd.Timestamp(today.year - 1, 12, 31)
-            else:
-                start = pd.Timestamp(today.year, (q - 1) * 3 + 1, 1)
-                end = pd.Timestamp(today.year, q * 3, 1) - pd.Timedelta(days=1)
-                # end = последний день предыдущего квартала
-                end = pd.Timestamp(today.year, q * 3 + 1, 1) - pd.Timedelta(days=1)
-                start = pd.Timestamp(today.year, (q - 1) * 3 + 1, 1)
-            return (start, end)
-        if name == "Этот год":
-            return (pd.Timestamp(today.year, 1, 1), today)
-        # «За всё время» и fallback
-        return (pd.Timestamp(data_min), pd.Timestamp(data_max))
+def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timestamp):
+    today = pd.Timestamp(data_max).normalize()
+    if name == "Сегодня":
+        return (today, today)
+    if name == "Вчера":
+        y = today - pd.Timedelta(days=1)
+        return (y, y)
+    if name == "Последние 7 дней":
+        return (today - pd.Timedelta(days=6), today)
+    if name == "Последние 30 дней":
+        return (today - pd.Timedelta(days=29), today)
+    if name == "Последние 90 дней":
+        return (today - pd.Timedelta(days=89), today)
+    if name == "Этот месяц":
+        return (today.replace(day=1), today)
+    if name == "Прошлый месяц":
+        first = today.replace(day=1)
+        last_prev = first - pd.Timedelta(days=1)
+        return (last_prev.replace(day=1), last_prev)
+    if name == "Этот квартал":
+        q = (today.month - 1) // 3
+        return (pd.Timestamp(today.year, q * 3 + 1, 1), today)
+    if name == "Прошлый квартал":
+        q = (today.month - 1) // 3
+        if q == 0:
+            start = pd.Timestamp(today.year - 1, 10, 1)
+            end = pd.Timestamp(today.year - 1, 12, 31)
+        else:
+            start = pd.Timestamp(today.year, (q - 1) * 3 + 1, 1)
+            end = pd.Timestamp(today.year, q * 3 + 1, 1) - pd.Timedelta(days=1)
+        return (start, end)
+    if name == "Этот год":
+        return (pd.Timestamp(today.year, 1, 1), today)
+    return (pd.Timestamp(data_min), pd.Timestamp(data_max))
 
+
+# Hero с интегрированным выбором периода (как у Я.Директ)
+hcol_left, hcol_right = st.columns([3.2, 1.4])
+with hcol_left:
+    st.markdown(
+        """
+        <div class="ufo-hero-text">
+          <h1>Окупаемость рекламы</h1>
+          <div class="ufo-sub">UFO Hosting · Яндекс.Директ · LTV / CAC / Retention</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with hcol_right:
     preset = st.selectbox(
         "Период",
         PERIOD_PRESETS,
         index=PERIOD_PRESETS.index("За всё время"),
         key="period_preset",
+        label_visibility="collapsed",
     )
 
-    if preset == "Произвольный":
-        period = st.date_input(
-            "Диапазон",
-            value=(overall_min, overall_max),
-            min_value=overall_min, max_value=overall_max,
-            format="DD.MM.YYYY",
-            key="period_custom",
-        )
-        if isinstance(period, tuple) and len(period) == 2:
-            d_from, d_to = pd.Timestamp(period[0]), pd.Timestamp(period[1])
-        else:
-            d_from, d_to = pd.Timestamp(overall_min), pd.Timestamp(overall_max)
+if preset == "Произвольный":
+    period = st.date_input(
+        "Диапазон дат",
+        value=(overall_min, overall_max),
+        min_value=overall_min, max_value=overall_max,
+        format="DD.MM.YYYY",
+        key="period_custom",
+    )
+    if isinstance(period, tuple) and len(period) == 2:
+        d_from, d_to = pd.Timestamp(period[0]), pd.Timestamp(period[1])
     else:
-        d_from, d_to = _compute_preset_range(
-            preset, pd.Timestamp(overall_max), pd.Timestamp(overall_min)
-        )
-        # клампим к доступным данным
-        d_from = max(d_from, pd.Timestamp(overall_min))
-        d_to = min(d_to, pd.Timestamp(overall_max))
-        st.caption(f"📅 {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}")
+        d_from, d_to = pd.Timestamp(overall_min), pd.Timestamp(overall_max)
+else:
+    d_from, d_to = _compute_preset_range(
+        preset, pd.Timestamp(overall_max), pd.Timestamp(overall_min)
+    )
+    d_from = max(d_from, pd.Timestamp(overall_min))
+    d_to = min(d_to, pd.Timestamp(overall_max))
 
-    st.divider()
+# Подзаголовок с актуальным диапазоном дат
+st.markdown(
+    f'<div class="ufo-hero-range">📅 {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}</div>',
+    unsafe_allow_html=True,
+)
+
+
+with placeholder_filters:
     # PDF / Print
     import streamlit.components.v1 as components
     pdf_clicked = st.button(
@@ -629,7 +639,7 @@ with placeholder_filters:
             "<script>setTimeout(()=>{ window.parent.print(); }, 100);</script>",
             height=0,
         )
-
+    st.divider()
     attribution_pct = st.slider(
         "Атрибуция платного трафика, %",
         min_value=10, max_value=100, value=100, step=5,
@@ -649,23 +659,7 @@ ads = M.filter_ads_by_period(ads_combined, d_from, d_to)
 ads_all = ads_combined  # чтобы остальной код видел совместный набор
 
 
-# ============================================================
-#                       Hero
-# ============================================================
-
 period_label = f"{d_from:%d.%m.%Y} – {d_to:%d.%m.%Y}"
-st.markdown(
-    f"""
-    <div class="ufo-hero">
-      <div>
-        <h1>Окупаемость рекламы</h1>
-        <div class="ufo-sub">UFO Hosting · Яндекс.Директ · LTV / CAC / Retention</div>
-      </div>
-      <div class="ufo-period-badge">{period_label}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 
 # ============================================================
