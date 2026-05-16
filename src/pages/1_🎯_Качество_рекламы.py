@@ -145,15 +145,57 @@ _q_camp, _q_camp_meta = load_quality_cache("campaign_quality")
 _q_kw, _q_kw_meta = load_quality_cache("keywords")
 _q_ad, _q_ad_meta = load_quality_cache("ads_creatives")
 
-if _q_camp.empty and _q_kw.empty and _q_ad.empty:
-    st.info(
-        "📭 **Нет данных.** Нажмите **«Подтянуть качество»** в сайдбаре "
-        "слева, чтобы получить аналитику из Яндекс.Директа за выбранный период.\n\n"
-        "Что подтянется:\n"
-        "- **Кампании** — CTR, CPC, конверсии-цели Метрики, CPL, отказы, глубина просмотров\n"
-        "- **Ключевые слова** — топ по расходу, топ по конверсиям, топ убыточных\n"
-        "- **Объявления (креативы)** — A/B-сравнение по CTR и конверсиям\n"
-    )
+# Если кэша нет, а API подключён — автозагрузка за последние 90 дней.
+# Это даёт «Roistat-like» поведение: открыл страницу → кампании уже видны.
+# При неудаче запоминаем флаг чтобы не зацикливать попытки.
+_cache_empty = _q_camp.empty and _q_kw.empty and _q_ad.empty
+_auto_failed = st.session_state.get("yd_quality_auto_failed", False)
+
+if _cache_empty and _yd_creds_global and not _auto_failed:
+    with st.spinner(
+        "Подтягиваю кампании из Яндекс.Директа за последние 90 дней… "
+        "(30-60 секунд, делается один раз — дальше кэшируется)"
+    ):
+        try:
+            from yandex_direct import (
+                DirectCredentials,
+                fetch_campaign_quality, fetch_keyword_report, fetch_ad_report,
+            )
+            auto_creds = DirectCredentials(
+                token=_yd_creds_global.token,
+                client_login=_yd_creds_global.client_login,
+            )
+            auto_from = (pd.Timestamp.today() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+            auto_to = pd.Timestamp.today().strftime("%Y-%m-%d")
+            auto_period = (auto_from, auto_to)
+
+            cq = fetch_campaign_quality(auto_creds, *auto_period)
+            save_quality_cache("campaign_quality", cq, auto_period)
+            kw = fetch_keyword_report(auto_creds, *auto_period)
+            save_quality_cache("keywords", kw, auto_period)
+            ad = fetch_ad_report(auto_creds, *auto_period)
+            save_quality_cache("ads_creatives", ad, auto_period)
+            st.rerun()
+        except Exception as e:
+            st.session_state["yd_quality_auto_failed"] = True
+            st.error(f"Не получилось подтянуть аналитику автоматически: {e}")
+
+if _cache_empty:
+    if _yd_creds_global is None:
+        st.error(
+            "🔑 **API Яндекс.Директа не подключён.** Добавьте `YANDEX_DIRECT_TOKEN` "
+            "в Streamlit Secrets — после этого кампании появятся автоматически."
+        )
+    else:
+        st.info(
+            "📭 **Нет данных.** Выберите период в сайдбаре слева и нажмите "
+            "**«Подтянуть качество»** — кампании, ключевики и объявления подтянутся "
+            "из Яндекс.Директа.\n\n"
+            "Что вы увидите:\n"
+            "- **Кампании** — CTR, CPC, конверсии-цели Метрики, CPL, отказы, глубина просмотров\n"
+            "- **Ключевые слова** — топ по расходу, топ по конверсиям, топ убыточных\n"
+            "- **Объявления (креативы)** — A/B-сравнение по CTR и конверсиям\n"
+        )
     st.stop()
 
 _q_period_lbl = (
