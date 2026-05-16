@@ -20,7 +20,7 @@ jobs:
       - name: Install huggingface_hub
         run: pip install --quiet "huggingface_hub>=0.25"
 
-      - name: Upload to HF Space
+      - name: Upload to HF Space + ensure secrets
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -32,27 +32,36 @@ jobs:
           import os
           from huggingface_hub import HfApi
 
-          api = HfApi(token=os.environ["HF_TOKEN"])
+          token = os.environ["HF_TOKEN"]
+          api = HfApi(token=token)
+
+          # Upload code
           api.upload_folder(
               folder_path=".",
               repo_id="avdeevrus/ufo-hosting-dashboard",
               repo_type="space",
               commit_message="Sync from GitHub via Actions",
               ignore_patterns=[
-                  ".git/*",
-                  ".git",
-                  ".github/*",
-                  "data/orders/*.csv",
-                  "data/ads/*.xlsx",
-                  ".venv/*",
-                  "__pycache__/*",
-                  "**/__pycache__/*",
-                  "*.pyc",
-                  ".playwright-mcp/*",
-                  "*.png",
-                  ".claude/*",
-                  "reports/*",
+                  ".git/*", ".git", ".github/*",
+                  "data/orders/*.csv", "data/ads/*.xlsx",
+                  ".venv/*", "__pycache__/*", "**/__pycache__/*",
+                  "*.pyc", ".playwright-mcp/*", "*.png",
+                  ".claude/*", "reports/*",
               ],
           )
+          print("✓ Code uploaded")
+
+          # Ensure HF_TOKEN secret in Space (idempotent)
+          try:
+              api.add_space_secret(
+                  repo_id="avdeevrus/ufo-hosting-dashboard",
+                  key="HF_TOKEN",
+                  value=token,
+                  description="For accessing private dataset",
+              )
+              print("✓ HF_TOKEN secret ensured in Space")
+          except Exception as e:
+              print(f"⚠️ Could not set HF_TOKEN secret: {e}")
+
           print("Pushed to https://huggingface.co/spaces/avdeevrus/ufo-hosting-dashboard")
           PY
