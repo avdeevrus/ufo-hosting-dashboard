@@ -25,6 +25,7 @@ st.set_page_config(
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
+    import os
     import pandas as pd
     import plotly.express as px
     import plotly.graph_objects as go
@@ -38,6 +39,54 @@ try:
 except Exception as e:
     st.error("Ошибка инициализации приложения")
     st.code(traceback.format_exc())
+    st.stop()
+
+
+# ============================================================
+#                       Защита паролем
+# ============================================================
+
+def _check_password() -> bool:
+    """Простой password-gate. Если в Space Secrets нет APP_PASSWORD —
+    приложение открыто всем (по умолчанию). Если есть — требуется ввод."""
+    expected = os.environ.get("APP_PASSWORD")
+    if not expected:
+        return True  # пароль не настроен — открыт для всех
+
+    if st.session_state.get("auth_ok"):
+        return True
+
+    # Закрываем sidebar на экране логина
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] { display: none !important; }
+        .main .block-container { max-width: 420px !important; margin: 6rem auto !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div style="text-align:center; margin-bottom:1.5rem;">
+            <h2 style="margin:0;">UFO Hosting</h2>
+            <div style="color:#57606a; font-size:0.9rem; margin-top:0.4rem;">Дашборд окупаемости рекламы</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    pwd = st.text_input("Пароль доступа", type="password", key="login_pwd")
+    if pwd:
+        if pwd == expected:
+            st.session_state["auth_ok"] = True
+            st.rerun()
+        else:
+            st.error("Неверный пароль", icon="🔒")
+    st.caption("Доступ ограничен. Получите пароль у владельца дашборда.")
+    return False
+
+
+if not _check_password():
     st.stop()
 
 
@@ -301,22 +350,64 @@ def fmt_month_ru(dt, kind="short_year"):
     return f"{_RU_MONTHS_SHORT[dt.month]} {dt.year}"
 
 
+def make_sparkline_svg(values, color="#1f6feb", width=88, height=28, fill=True):
+    """Возвращает inline SVG sparkline для KPI плитки. Принимает список чисел."""
+    if not values or len(values) < 2:
+        return ""
+    vals = [float(v) if v is not None and not pd.isna(v) else 0 for v in values]
+    if all(v == 0 for v in vals):
+        return ""
+    mn, mx = min(vals), max(vals)
+    rng = (mx - mn) if mx > mn else max(abs(mx), 1)
+    points = []
+    pad = 3
+    for i, v in enumerate(vals):
+        x = pad + i / (len(vals) - 1) * (width - 2 * pad)
+        y = height - pad - ((v - mn) / rng) * (height - 2 * pad)
+        points.append(f"{x:.1f},{y:.1f}")
+    line = " ".join(points)
+    fill_poly = ""
+    if fill:
+        fill_points = f"{pad},{height - pad} {line} {width - pad},{height - pad}"
+        fill_poly = f'<polygon points="{fill_points}" fill="{color}" fill-opacity="0.12"/>'
+    # точка последнего значения
+    last_x = pad + (len(vals) - 1) / (len(vals) - 1) * (width - 2 * pad)
+    last_y = height - pad - ((vals[-1] - mn) / rng) * (height - 2 * pad)
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'style="display:block; margin-top:0.35rem;">'
+        f'{fill_poly}'
+        f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="1.5" '
+        f'stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="2.2" fill="{color}"/>'
+        f'</svg>'
+    )
+
+
 def kpi_card(label: str, value: str, delta: str = "", kind: str = "",
-             delta_kind: str = "neutral", tooltip: str = ""):
-    """Карточка KPI с фиксированным стилем. tooltip — текст подсказки при наведении на ⓘ."""
+             delta_kind: str = "neutral", tooltip: str = "",
+             spark_values=None, spark_color: str | None = None):
+    """Карточка KPI с фиксированным стилем. tooltip — подсказка ⓘ.
+    spark_values — список чисел для мини-графика тренда внутри плитки."""
     klass = f"kpi-card {kind}".strip()
     delta_html = f'<div class="kpi-delta {delta_kind}">{delta}</div>' if delta else ""
     tip_html = ""
     if tooltip:
         tip_safe = tooltip.replace('"', '&quot;').replace("\n", " ")
-        tip_html = (
-            f'<span class="kpi-tip" data-tip="{tip_safe}">ⓘ</span>'
-        )
+        tip_html = f'<span class="kpi-tip" data-tip="{tip_safe}">ⓘ</span>'
+    spark_html = ""
+    if spark_values and len(spark_values) >= 2:
+        c = spark_color or {
+            "green": PALETTE["green"], "red": PALETTE["red"],
+            "primary": PALETTE["primary"], "orange": PALETTE["orange"],
+        }.get(kind, PALETTE["muted"])
+        spark_html = make_sparkline_svg(spark_values, color=c)
     return f"""
     <div class="{klass}">
       <div class="kpi-label">{label}{tip_html}</div>
       <div class="kpi-value">{value}</div>
       {delta_html}
+      {spark_html}
     </div>
     """
 
@@ -330,10 +421,31 @@ def _initial_storage_sync():
     if not storage.is_enabled():
         return {"enabled": False}
     storage.ensure_dataset_exists()
-    return storage.sync_down()
+    info = storage.sync_down()
+    # Автоматически тянем кэш API за последние 60 дней (обновляется GitHub Action ежедневно)
+    api_df = storage.sync_api_cache_down()
+    if api_df is not None and not api_df.empty:
+        info["api_cache_rows"] = len(api_df)
+        info["api_cache_last_month"] = str(api_df["month"].max())[:10] if "month" in api_df.columns else None
+    return info
 
 
 _sync_info = _initial_storage_sync()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_api_cache_df():
+    """Подтягиваем кэшированные API-данные с диска (заполненные daily action или sync_api_cache_down)."""
+    cache_path = Path(__file__).resolve().parent.parent / "data" / "api_cache" / "yd_rolling.json"
+    if not cache_path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_json(cache_path)
+        if not df.empty and "month" in df.columns:
+            df["month"] = pd.to_datetime(df["month"])
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 # ============================================================
@@ -522,9 +634,12 @@ if not ads_all.empty:
     ad_max = ads_all["month"].max().date()
 else:
     ad_min, ad_max = pay_min, pay_max
-# Учитываем даты API данных в overall_max
-if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
-    api_max = st.session_state["yd_api_ads"]["month"].max().date()
+# Учитываем даты API данных в overall_max (из session или из daily cache)
+_api_session = st.session_state.get("yd_api_ads")
+_api_cache_df = _load_api_cache_df()
+_api_for_bounds = _api_session if (_api_session is not None and not _api_session.empty) else _api_cache_df
+if _api_for_bounds is not None and not _api_for_bounds.empty and "month" in _api_for_bounds.columns:
+    api_max = _api_for_bounds["month"].max().date()
     if api_max > ad_max:
         ad_max = api_max
 overall_min = min(pay_min, ad_min)
@@ -652,6 +767,13 @@ with placeholder_filters:
     )
     attribution_factor = attribution_pct / 100.0
 
+    cogs_pct = st.slider(
+        "Себестоимость (COGS), %",
+        min_value=0, max_value=80, value=30, step=5,
+        help="Доля себестоимости от выручки. Для хостинга обычно 25–35% (датацентры, лицензии). Используется для расчёта чистой прибыли.",
+    )
+    cogs_factor = cogs_pct / 100.0
+
 
 orders = M.filter_orders_by_period(orders_all, d_from, d_to)
 
@@ -660,8 +782,12 @@ orders = M.filter_orders_by_period(orders_all, d_from, d_to)
 #   считаем что API даёт полный месяц и замещаем XLSX.
 # - Иначе оставляем XLSX (API частичный, чтобы не задвоить данные).
 ads_combined = ads_all
-if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
-    api_ads = st.session_state["yd_api_ads"]
+# Источник API: session (ручной Sync) приоритетнее кэша из daily action
+_api_ads_source = st.session_state.get("yd_api_ads")
+if _api_ads_source is None or (hasattr(_api_ads_source, "empty") and _api_ads_source.empty):
+    _api_ads_source = _load_api_cache_df()
+if _api_ads_source is not None and not _api_ads_source.empty:
+    api_ads = _api_ads_source
     api_sum_by_month = api_ads.groupby("month")["spend_rub"].sum()
     xlsx_sum_by_month = ads_all.groupby("month")["spend_rub"].sum() if not ads_all.empty else pd.Series(dtype=float)
     months_replace = set()  # API замещает XLSX за этот месяц целиком
@@ -749,6 +875,19 @@ romi_pct = (net / ck.spend * 100) if ck.spend else 0.0
 cac = ck.spend / max(ck.new_clients, 1)
 ltv_cac = ck.arpu / cac if cac else 0.0
 
+# P&L (Profit & Loss): прибыль = доход − себестоимость − реклама
+cogs_amount = ck.revenue * cogs_factor
+profit = ck.revenue - cogs_amount - ck.spend
+profit_margin = (profit / ck.revenue * 100) if ck.revenue > 0 else 0.0
+
+# Sparkline-тренды за месяцы (для вставки в плитки)
+_ms = M.monthly_summary(orders, ads)
+spark_spend = _ms["spend"].tolist() if not _ms.empty else []
+spark_revenue = _ms["revenue"].tolist() if not _ms.empty else []
+spark_new = _ms["new_clients"].tolist() if not _ms.empty else []
+spark_romi = _ms["romi"].fillna(0).tolist() if not _ms.empty else []
+spark_cac = _ms["cac"].fillna(0).tolist() if not _ms.empty else []
+
 # Row 1 — главные 4 плитки
 c1, c2, c3, c4 = st.columns(4)
 c1.markdown(kpi_card(
@@ -756,6 +895,7 @@ c1.markdown(kpi_card(
     fmt_rub(ck.spend),
     f"с НДС · {period_label}", kind="red", delta_kind="neutral",
     tooltip="Сумма списаний в Яндекс.Директе за период. Суммы указаны с учётом НДС (как у Яндекса). Тянется из XLSX или из API.",
+    spark_values=spark_spend,
 ), unsafe_allow_html=True)
 c2.markdown(kpi_card(
     "Доход (оплаты)",
@@ -763,6 +903,7 @@ c2.markdown(kpi_card(
     f"{ck.orders_paid:,} {plural_ru(ck.orders_paid, 'оплата', 'оплаты', 'оплат')}".replace(",", " "),
     kind="green",
     tooltip="Реально поступившие деньги от клиентов за период. Из CSV-выгрузок «Содержимое заказов» (статус «Оплачен»).",
+    spark_values=spark_revenue,
 ), unsafe_allow_html=True)
 romi_kind = "up" if net >= 0 else "down"
 romi_arrow = "↑" if net >= 0 else "↓"
@@ -773,13 +914,16 @@ c3.markdown(kpi_card(
     f"{romi_arrow} {fmt_rub(abs(net))} {'прибыли' if net >= 0 else 'к окупаемости'}",
     kind=romi_color_kind, delta_kind=romi_kind,
     tooltip="Return On Marketing Investment = (Доход × атрибуция − Расход) / Расход. >0 — реклама окупается. Для хостинга норма раскрывается на горизонте 6–12 мес. за счёт повторных оплат.",
+    spark_values=spark_romi,
 ), unsafe_allow_html=True)
+profit_kind = "green" if profit >= 0 else "red"
+profit_delta_kind = "up" if profit >= 0 else "down"
 c4.markdown(kpi_card(
-    "Клиентов",
-    fmt_num(ck.unique_clients),
-    f"новых: {ck.new_clients} · повторных: {ck.repeat_clients}",
-    kind="primary",
-    tooltip="Уникальные клиенты с хотя бы одной оплатой в периоде. Новый = первая оплата клиента помечена «Новый». Повторный = оплата клиента, зарегистрированного раньше.",
+    "Прибыль",
+    fmt_rub(profit),
+    f"маржа {profit_margin:+.1f}% · COGS {cogs_pct}%",
+    kind=profit_kind, delta_kind=profit_delta_kind,
+    tooltip=f"Чистая прибыль = Доход − Себестоимость ({cogs_pct}%) − Расход на рекламу. COGS настраивается в сайдбаре («Себестоимость, %»).",
 ), unsafe_allow_html=True)
 
 st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
@@ -787,24 +931,28 @@ st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
 # Row 2 — второстепенные 4 плитки
 c5, c6, c7, c8 = st.columns(4)
 c5.markdown(kpi_card(
-    "CAC", fmt_rub(cac), "стоимость нового клиента",
-    tooltip="Customer Acquisition Cost = Расход на рекламу / число новых клиентов. Чем ниже, тем дешевле привлечение.",
+    "Клиенты",
+    fmt_num(ck.unique_clients),
+    f"новых: {ck.new_clients} · повторных: {ck.repeat_clients}",
+    kind="primary",
+    tooltip="Уникальные клиенты с хотя бы одной оплатой в периоде. Новый = первая оплата клиента помечена «Новый». Повторный = оплата клиента, зарегистрированного раньше.",
+    spark_values=spark_new,
 ), unsafe_allow_html=True)
 c6.markdown(kpi_card(
-    "ARPU", fmt_rub(ck.arpu), "доход на клиента",
-    tooltip="Average Revenue Per User = Доход / уникальных клиентов. Сколько в среднем приносит один клиент за период.",
+    "CAC", fmt_rub(cac), "стоимость нового клиента",
+    tooltip="Customer Acquisition Cost = Расход на рекламу / число новых клиентов. Чем ниже, тем дешевле привлечение.",
+    spark_values=spark_cac,
 ), unsafe_allow_html=True)
 c7.markdown(kpi_card(
-    "Средний чек", fmt_rub(ck.avg_check),
-    f"{ck.avg_orders_per_client:.2f} оплат на клиента",
-    tooltip="Средняя сумма одной оплаты. Низкий чек × много оплат = ежемесячные продления. Высокий чек × мало = годовые тарифы.",
+    "ARPU", fmt_rub(ck.arpu), "доход на клиента",
+    tooltip="Average Revenue Per User = Доход / уникальных клиентов. Сколько в среднем приносит один клиент за период.",
 ), unsafe_allow_html=True)
 ltv_kind = "up" if ltv_cac >= 1 else "down"
 ltv_color = "green" if ltv_cac >= 1 else "red"
 c8.markdown(kpi_card(
     "LTV / CAC",
     f"{ltv_cac:.2f}×",
-    "цель ≥ 1×, отлично ≥ 3×",
+    f"средний чек {fmt_rub(ck.avg_check)} · {ck.avg_orders_per_client:.2f} опл/клиент",
     kind=ltv_color, delta_kind=ltv_kind,
     tooltip="Отношение пожизненной ценности клиента к стоимости его привлечения. 1× — окупается, 3× — прибыльная модель. У хостинга растёт во времени за счёт продлений.",
 ), unsafe_allow_html=True)

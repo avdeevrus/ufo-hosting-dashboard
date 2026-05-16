@@ -145,6 +145,31 @@ def list_remote() -> list[str]:
         return []
 
 
+def sync_api_cache_down():
+    """Скачиваем api_cache/yd_rolling.json из dataset и возвращаем DataFrame
+    с расходами Я.Директ (помесячно). Используется на старте Streamlit, чтобы
+    дашборд видел свежие данные без ручного нажатия Sync."""
+    import pandas as pd
+    token = _get_token()
+    if not token:
+        return pd.DataFrame()
+    try:
+        from huggingface_hub import hf_hub_download
+        local = hf_hub_download(
+            repo_id=DATASET_REPO,
+            repo_type=DATASET_TYPE,
+            filename="api_cache/yd_rolling.json",
+            token=token,
+            local_dir=str(CACHE_DIR),
+        )
+        df = pd.read_json(local)
+        if not df.empty and "month" in df.columns:
+            df["month"] = pd.to_datetime(df["month"])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def delete_remote(filename: str, subdir: str) -> bool:
     token = _get_token()
     if not token:

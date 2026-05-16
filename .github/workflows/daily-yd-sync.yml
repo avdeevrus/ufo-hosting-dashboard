@@ -1,0 +1,31 @@
+name: Daily Я.Директ Sync
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install pandas requests "huggingface_hub>=0.25"
+
+      - name: Run daily sync
+        env:
+          YANDEX_DIRECT_TOKEN: ${{ secrets.YANDEX_DIRECT_TOKEN }}
+          YANDEX_DIRECT_CLIENT_LOGIN: ${{ secrets.YANDEX_DIRECT_CLIENT_LOGIN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python scripts/sync_yd_daily.py
