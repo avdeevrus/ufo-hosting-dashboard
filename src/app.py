@@ -73,20 +73,21 @@ st.markdown(
         font-weight: 700; letter-spacing: -0.4px; color: {PALETTE['text']};
     }}
     .ufo-hero {{
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 1.1rem 1.4rem; border-radius: 12px;
-        background: {PALETTE['panel']};
-        border: 1px solid {PALETTE['border']};
-        margin-bottom: 1.4rem;
+        display: flex; align-items: flex-end; justify-content: space-between;
+        padding: 0.4rem 0 1.3rem 0;
+        border-bottom: 1px solid {PALETTE['border']};
+        margin-bottom: 1.6rem;
     }}
-    .ufo-hero h1 {{ margin: 0; font-size: 1.55rem; color: {PALETTE['text']}; }}
+    .ufo-hero h1 {{ margin: 0; font-size: 1.75rem; color: {PALETTE['text']}; letter-spacing: -0.5px; }}
     .ufo-hero .ufo-sub {{
-        color: {PALETTE['muted']}; font-size: 0.88rem; margin-top: 0.25rem;
+        color: {PALETTE['muted']}; font-size: 0.85rem; margin-top: 0.3rem;
+        letter-spacing: 0.2px;
     }}
     .ufo-hero .ufo-period-badge {{
-        background: #ffffff; color: {PALETTE['text']};
-        padding: 0.4rem 0.9rem; border-radius: 8px; font-weight: 600;
+        background: {PALETTE['panel']}; color: {PALETTE['text']};
+        padding: 0.45rem 0.9rem; border-radius: 6px; font-weight: 600;
         font-size: 0.82rem; border: 1px solid {PALETTE['border']};
+        white-space: nowrap;
     }}
 
     /* KPI плитки */
@@ -209,109 +210,89 @@ _sync_info = _initial_storage_sync()
 # ============================================================
 
 with st.sidebar:
-    st.markdown("# 🛰️ UFO Hosting")
-    st.caption("Окупаемость Яндекс.Директ и LTV клиентов")
+    st.markdown("### UFO Hosting")
+    st.caption("Дашборд окупаемости · LTV · CAC")
     st.divider()
 
-    st.markdown("**📥 Загрузить выгрузки**")
+    st.markdown("**Загрузить выгрузку заказов**")
     uploaded_orders = st.file_uploader(
-        "CSV выгрузки заказов",
-        type=["csv"], accept_multiple_files=True,
+        label="CSV «Содержимое заказов» из админки UFO Hosting",
+        type=["csv"],
+        accept_multiple_files=True,
         key="orders_upload",
-        help="Можно загрузить сразу несколько файлов — дубликаты по ID покупки убираются автоматически.",
+        label_visibility="visible",
+        help="Можно загрузить несколько файлов — дубликаты по ID покупки убираются.",
     )
-    uploaded_ads = st.file_uploader(
-        "XLSX отчёты Яндекс.Директ",
-        type=["xlsx"], accept_multiple_files=True,
-        key="ads_upload",
-    )
+    # XLSX-загрузка для клиента не нужна: расходы тянутся только из Я.Директ API
+    uploaded_ads = None
 
-    # Сохраняем загруженные файлы в persistent storage (HF Dataset)
+    # Сохраняем загруженный CSV в облако
     if storage.is_enabled():
         for f in uploaded_orders or []:
             key = f"_uploaded_{f.name}_{f.size}"
             if key not in st.session_state:
                 if storage.upload_orders_csv(f.name, f.getvalue()):
                     st.session_state[key] = True
-                    st.toast(f"💾 {f.name} сохранён в облако", icon="✅")
-        for f in uploaded_ads or []:
-            key = f"_uploaded_{f.name}_{f.size}"
-            if key not in st.session_state:
-                if storage.upload_ads_xlsx(f.name, f.getvalue()):
-                    st.session_state[key] = True
-                    st.toast(f"💾 {f.name} сохранён в облако", icon="✅")
+                    st.toast(f"Файл «{f.name}» сохранён в облако", icon="✅")
 
+    # Компактный статус облака
+    n_o_disk = len(list(ORDERS_DIR.glob('*.csv')))
+    n_a_disk = len(list(ADS_DIR.glob('*.xlsx')))
     if storage.is_enabled():
-        if st.button("🔄 Обновить из облака", use_container_width=True, key="resync_btn"):
+        if _sync_info and _sync_info.get("error"):
+            st.error(f"Ошибка облака: {_sync_info['error']}", icon="⚠️")
+        else:
+            st.caption(f"💾 Облако · {n_o_disk} файлов с заказами синхронизировано")
+        if st.button("Обновить из облака", use_container_width=True, key="resync_btn", type="secondary"):
             st.cache_resource.clear()
             st.cache_data.clear()
             st.rerun()
-        if _sync_info and _sync_info.get("error"):
-            st.error(f"⚠️ Ошибка облака: {_sync_info['error']}", icon="⚠️")
-        elif _sync_info and _sync_info.get("enabled"):
-            n_o = _sync_info.get("orders", 0)
-            n_a = _sync_info.get("ads", 0)
-            n_files = _sync_info.get("files_in_dataset", 0)
-            st.caption(
-                f"💾 Облако подключено · в датасете файлов: {n_files}  \n"
-                f"⬇️ Скачано: {n_o} заказов, {n_a} рекламы"
-            )
-        else:
-            st.caption("💾 Облако подключено · ожидание синхронизации")
     else:
-        st.caption("🔌 Облачное хранилище не подключено")
-    st.caption(
-        f"📁 на диске: {len(list(ORDERS_DIR.glob('*.csv')))} заказов · {len(list(ADS_DIR.glob('*.xlsx')))} рекламы"
-    )
+        st.caption(f"Локально: {n_o_disk} файлов с заказами")
 
     st.divider()
 
-    # Я.Директ API блок — всегда виден, чтобы можно было синхронизировать ДО загрузки CSV
+    # Я.Директ API
     _yd_creds_global = yd_creds()
     if _yd_creds_global:
-        st.markdown("**🔗 Яндекс.Директ API**")
-        sync_from = st.date_input(
-            "С",
-            value=pd.Timestamp.today() - pd.Timedelta(days=90),
-            key="yd_sync_from",
-            format="DD.MM.YYYY",
-        )
-        sync_to = st.date_input(
-            "По",
-            value=pd.Timestamp.today(),
-            key="yd_sync_to",
-            format="DD.MM.YYYY",
-        )
-        if st.button("🔄 Синхронизировать", use_container_width=True, key="yd_sync_btn"):
-            try:
-                from yandex_direct import fetch_campaign_report, to_ads_dataframe
-                with st.spinner("Тяну отчёт из Я.Директ (до минуты)…"):
-                    raw = fetch_campaign_report(
-                        _yd_creds_global,
-                        date_from=str(sync_from),
-                        date_to=str(sync_to),
-                    )
-                    api_ads = to_ads_dataframe(raw)
-                if api_ads.empty:
-                    st.warning("API вернул пустой отчёт.")
-                else:
-                    st.session_state["yd_api_ads"] = api_ads
-                    st.success(
-                        f"✓ {len(api_ads)} строк, "
-                        f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " ")
-                    )
-                    st.cache_data.clear()
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Ошибка API: {e}")
-        if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
-            n = len(st.session_state["yd_api_ads"])
-            st.caption(f"📊 В сессии из API: **{n}** строк")
-    else:
-        st.caption(
-            "🔌 Я.Директ API не подключён.  \n"
-            "Добавьте `YANDEX_DIRECT_TOKEN` в Space Secrets."
-        )
+        with st.expander("Яндекс.Директ API · синхронизация", expanded=False):
+            sync_from = st.date_input(
+                "С даты",
+                value=pd.Timestamp.today() - pd.Timedelta(days=90),
+                key="yd_sync_from",
+                format="DD.MM.YYYY",
+            )
+            sync_to = st.date_input(
+                "По дату",
+                value=pd.Timestamp.today(),
+                key="yd_sync_to",
+                format="DD.MM.YYYY",
+            )
+            if st.button("Подтянуть статистику", use_container_width=True, key="yd_sync_btn", type="primary"):
+                try:
+                    from yandex_direct import fetch_campaign_report, to_ads_dataframe
+                    with st.spinner("Тяну отчёт из Я.Директ (до минуты)…"):
+                        raw = fetch_campaign_report(
+                            _yd_creds_global,
+                            date_from=str(sync_from),
+                            date_to=str(sync_to),
+                        )
+                        api_ads = to_ads_dataframe(raw)
+                    if api_ads.empty:
+                        st.warning("API вернул пустой отчёт.")
+                    else:
+                        st.session_state["yd_api_ads"] = api_ads
+                        st.success(
+                            f"Подтянуто {len(api_ads)} строк, "
+                            f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " ")
+                        )
+                        st.cache_data.clear()
+                        st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+            if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
+                n = len(st.session_state["yd_api_ads"])
+                st.caption(f"В сессии данных из API: {n} строк")
 
     st.divider()
 
@@ -383,7 +364,7 @@ if not HAS_DATA:
 # ============================================================
 
 with placeholder_filters:
-    st.markdown("**🎛️ Фильтры**")
+    st.markdown("**Фильтры**")
 
     if not orders_all.empty:
         pay_min = orders_all["payment_date"].min().date()
@@ -438,8 +419,8 @@ st.markdown(
     f"""
     <div class="ufo-hero">
       <div>
-        <h1>🛰️ Окупаемость рекламы · UFO Hosting</h1>
-        <div class="ufo-sub">Яндекс.Директ · LTV · CAC · Retention</div>
+        <h1>Окупаемость рекламы</h1>
+        <div class="ufo-sub">UFO Hosting · Яндекс.Директ · LTV / CAC / Retention</div>
       </div>
       <div class="ufo-period-badge">{period_label}</div>
     </div>
