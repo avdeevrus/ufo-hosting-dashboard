@@ -23,6 +23,8 @@ jobs:
       - name: Upload to HF Space + ensure secrets
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          YANDEX_DIRECT_TOKEN: ${{ secrets.YANDEX_DIRECT_TOKEN }}
         run: |
           if [ -z "$HF_TOKEN" ]; then
             echo "HF_TOKEN secret is not set"
@@ -51,17 +53,23 @@ jobs:
           )
           print("✓ Code uploaded")
 
-          # Ensure HF_TOKEN secret in Space (idempotent)
-          try:
-              api.add_space_secret(
-                  repo_id="avdeevrus/ufo-hosting-dashboard",
-                  key="HF_TOKEN",
-                  value=token,
-                  description="For accessing private dataset",
-              )
-              print("✓ HF_TOKEN secret ensured in Space")
-          except Exception as e:
-              print(f"⚠️ Could not set HF_TOKEN secret: {e}")
+          # Set secrets in Space (idempotent)
+          secrets_to_sync = [
+              ("HF_TOKEN", token, "For accessing private dataset"),
+              ("APP_PASSWORD", os.environ.get("APP_PASSWORD"), "Login password for dashboard"),
+              ("YANDEX_DIRECT_TOKEN", os.environ.get("YANDEX_DIRECT_TOKEN"), "Yandex.Direct API OAuth token"),
+          ]
+          for key, value, desc in secrets_to_sync:
+              if not value:
+                  continue
+              try:
+                  api.add_space_secret(
+                      repo_id="avdeevrus/ufo-hosting-dashboard",
+                      key=key, value=value, description=desc,
+                  )
+                  print(f"✓ {key} secret synced to Space")
+              except Exception as e:
+                  print(f"⚠️ Could not set {key}: {e}")
 
           print("Pushed to https://huggingface.co/spaces/avdeevrus/ufo-hosting-dashboard")
           PY
