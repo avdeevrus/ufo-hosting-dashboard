@@ -30,6 +30,7 @@ from _shared import (
     kpi_card,
     check_password, apply_base_styles,
     load_quality_cache, save_quality_cache,
+    render_cache_reset_button,
 )
 from yandex_direct import get_credentials as yd_creds
 
@@ -126,6 +127,9 @@ with st.sidebar:
                 f"📦 Кэш за {_cq_meta.get('period_from', '?')} – "
                 f"{_cq_meta.get('period_to', '?')}"
             )
+
+    st.divider()
+    render_cache_reset_button(key_prefix="quality")
 
     if os.environ.get("APP_PASSWORD"):
         st.divider()

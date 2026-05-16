@@ -1248,6 +1248,10 @@ with placeholder_filters:
     # и был несовместим с другими KPI, которые считались без учёта.
     attribution_factor = 1.0
 
+    st.divider()
+    from _shared import render_cache_reset_button as _reset_btn
+    _reset_btn(key_prefix="dashboard")
+
     # Кнопка «Выйти» — только если включена парольная защита
     if os.environ.get("APP_PASSWORD"):
         st.divider()

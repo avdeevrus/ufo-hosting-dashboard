@@ -263,6 +263,54 @@ def load_quality_cache(kind: str) -> tuple[pd.DataFrame, dict]:
         return pd.DataFrame(), {}
 
 
+def reset_all_caches(*, clear_quality_files: bool = True) -> dict:
+    """Сбрасывает Streamlit-кэши (data + resource) и опционально удаляет
+    диск-кэш аналитики качества. Возвращает счётчик удалённых файлов.
+
+    Используется кнопкой «Сбросить кэш» в сайдбаре.
+    """
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    removed = 0
+    if clear_quality_files and QUALITY_CACHE_DIR.exists():
+        for fname in QUALITY_CACHE_FILES.values():
+            p = QUALITY_CACHE_DIR / fname
+            if p.exists():
+                try:
+                    p.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+    return {"removed_files": removed}
+
+
+def render_cache_reset_button(*, key_prefix: str = "global") -> None:
+    """Рендерит кнопку «Сбросить кэш» с подтверждением через checkbox.
+    Используется на любой странице — параметр key_prefix должен быть уникальным."""
+    with st.expander("🔄 Сбросить кэш приложения", expanded=False):
+        st.caption(
+            "Очистит кэш Streamlit (включая API-кэш Я.Директа на диске). "
+            "Все данные подтянутся заново при следующем запросе."
+        )
+        also_files = st.checkbox(
+            "Удалить также кэш-файлы качества рекламы (yd_*.json)",
+            value=True,
+            key=f"{key_prefix}_reset_files",
+        )
+        if st.button(
+            "Сбросить кэш сейчас",
+            use_container_width=True,
+            key=f"{key_prefix}_reset_btn",
+            type="secondary",
+        ):
+            info = reset_all_caches(clear_quality_files=also_files)
+            msg = "Кэш сброшен."
+            if also_files and info["removed_files"]:
+                msg += f" Удалено файлов: {info['removed_files']}."
+            st.success(msg)
+            st.rerun()
+
+
 # ============================================================
 #                       CSS (общий для всех страниц)
 # ============================================================
