@@ -87,6 +87,27 @@ def fetch_campaign_report(creds: DirectCredentials,
             wait = int(r.headers.get("retryIn", "5"))
             time.sleep(wait)
             continue
+        if r.status_code >= 400 and r.status_code != 200:
+            # Распакуем человекочитаемую ошибку
+            try:
+                err = r.json().get("error", {})
+                code = err.get("error_code")
+                es = err.get("error_string", "")
+                ed = err.get("error_detail", "")
+                msg = f"Я.Директ API ошибка {code}: {es}"
+                if ed:
+                    msg += f" — {ed}"
+                if code == 53:  # NO_RIGHTS
+                    msg += "\nПроверьте, что в OAuth-приложении выбрано право «Использование API Директа»."
+                elif code == 54:  # no campaigns
+                    msg += "\nПо аккаунту нет рекламных кампаний за указанный период."
+                elif code == 8800:
+                    msg += "\nЭто агентский аккаунт — нужен HTTP-заголовок Client-Login. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
+                elif code == 152:
+                    msg += "\nОтчёт уже строится, попробуйте через минуту."
+                raise RuntimeError(msg)
+            except (ValueError, KeyError):
+                raise RuntimeError(f"Я.Директ API HTTP {r.status_code}: {r.text[:400]}")
         if r.status_code == 200:
             df = pd.read_csv(io.StringIO(r.text), sep="\t")
             df = df.rename(columns={
