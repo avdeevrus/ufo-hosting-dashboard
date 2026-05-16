@@ -2284,6 +2284,251 @@ else:
 
 
 # ============================================================
+#         🎯 ДОЛГОСРОЧНАЯ ОКУПАЕМОСТЬ РЕКЛАМЫ
+# ============================================================
+# То чего НЕТ в Я.Директе и Метрике: связка «рекламный рубль ↔ платежи
+# клиента через 1, 3, 6, 12 месяцев». Главная фишка дашборда — видеть,
+# как реклама окупается за счёт повторных оплат на длинном горизонте.
+
+pb_df = M.cohort_payback(orders_all, ads_all)
+
+if not pb_df.empty and "ad_spend" in pb_df.columns:
+    # Берём только те когорты, где есть и расход, и хотя бы 1 клиент
+    pb = pb_df[(pb_df["ad_spend"] > 0) & (pb_df["clients"] > 0)].copy()
+
+    if not pb.empty:
+        st.markdown(
+            '<div class="section-title">🎯 Долгосрочная окупаемость рекламы</div>',
+            unsafe_allow_html=True,
+        )
+
+        rev_cols = sorted(
+            [c for c in pb.columns if c.startswith("cum_M+")],
+            key=lambda c: int(c.replace("cum_M+", "")),
+        )
+        max_horizon = max(int(c.replace("cum_M+", "")) for c in rev_cols) if rev_cols else 0
+
+        # ─── Hero: ключевая цифра окупаемости ──────────────────
+        total_spend_all = float(pb["ad_spend"].sum())
+        latest_col = rev_cols[-1] if rev_cols else None
+        # Кумулятив возврата на текущий момент (последний наблюдаемый M+N для каждой когорты)
+        observed_return = float(
+            sum(row[rev_cols].max() if not pd.isna(row[rev_cols].max()) else 0
+                for _, row in pb.iterrows())
+        )
+        return_pct = (observed_return / total_spend_all * 100) if total_spend_all else 0
+        # Сколько когорт уже окупились (payback_month <= max_horizon)
+        cohorts_paid = int((pb["payback_month"].notna() & (pb["payback_month"] >= 0)).sum())
+        cohorts_total = int(len(pb))
+        # Среднее число месяцев до окупаемости (только по окупившимся когортам)
+        avg_payback_m = pb["payback_month"].dropna()
+        avg_payback_m = avg_payback_m[avg_payback_m >= 0]
+        avg_payback_label = (
+            f"{avg_payback_m.mean():.1f} мес" if not avg_payback_m.empty else "ещё не окупились"
+        )
+
+        hero_kind = "green" if return_pct >= 100 else "orange" if return_pct >= 50 else "red"
+
+        st.markdown(
+            f"""
+            <div class="kpi-hero {hero_kind}">
+              <div class="kpi-hero-main">
+                <div class="kpi-hero-label">Возврат рекламного бюджета на сегодня</div>
+                <div class="kpi-hero-value">{return_pct:.1f}%</div>
+                <div class="kpi-hero-sub">
+                  Из <b>{fmt_rub(total_spend_all)}</b> расхода на Директ
+                  клиенты уже вернули <b>{fmt_rub(observed_return)}</b>.
+                  Окупилось когорт: <b>{cohorts_paid} из {cohorts_total}</b>,
+                  среднее время окупаемости: <b>{avg_payback_label}</b>.
+                </div>
+              </div>
+              <div class="kpi-hero-breakdown">
+                <div class="kpi-hero-bd-item">
+                  <div class="kpi-hero-bd-label">Вложено</div>
+                  <div class="kpi-hero-bd-value" style="color:{PALETTE['red']};">{fmt_rub(total_spend_all)}</div>
+                </div>
+                <div class="kpi-hero-bd-item">
+                  <div class="kpi-hero-bd-label">Вернулось</div>
+                  <div class="kpi-hero-bd-value" style="color:{PALETTE['green']};">{fmt_rub(observed_return)}</div>
+                </div>
+                <div class="kpi-hero-bd-item">
+                  <div class="kpi-hero-bd-label">Когорт окупилось</div>
+                  <div class="kpi-hero-bd-value">{cohorts_paid} / {cohorts_total}</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ─── Payback Curve: средний % возврата по горизонту ────
+        st.markdown(
+            '<div class="section-title">Кривая окупаемости — 1 ₽ в Директе возвращается N₽ за M мес</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Для каждого M+k считаем средний % возврата по тем когортам, у которых есть данные на M+k
+        curve_rows = []
+        for c in rev_cols:
+            k = int(c.replace("cum_M+", ""))
+            ratios = pb[c] / pb["ad_spend"]
+            ratios = ratios.replace([float("inf"), float("-inf")], pd.NA).dropna()
+            if not ratios.empty:
+                curve_rows.append({
+                    "month": k,
+                    "avg_return_ratio": float(ratios.mean()),
+                    "median_return_ratio": float(ratios.median()),
+                    "cohorts_count": int(ratios.shape[0]),
+                })
+        curve = pd.DataFrame(curve_rows)
+
+        if not curve.empty:
+            fig_pc = go.Figure()
+            fig_pc.add_trace(go.Scatter(
+                x=curve["month"], y=curve["avg_return_ratio"] * 100,
+                mode="lines+markers",
+                name="Средний возврат, %",
+                line=dict(color=PALETTE["green"], width=3),
+                marker=dict(size=8),
+                hovertemplate="M+%{x}<br>Вернулось: %{y:.1f}% от вложенного<extra></extra>",
+                fill="tozeroy", fillcolor="rgba(26, 127, 55, 0.10)",
+            ))
+            fig_pc.add_trace(go.Scatter(
+                x=curve["month"], y=curve["median_return_ratio"] * 100,
+                mode="lines",
+                name="Медиана",
+                line=dict(color=PALETTE["primary"], width=1, dash="dot"),
+                hovertemplate="M+%{x}<br>Медиана: %{y:.1f}%<extra></extra>",
+            ))
+            # Линия break-even = 100%
+            fig_pc.add_hline(
+                y=100, line_dash="dash", line_color=PALETTE["muted"],
+                annotation_text="Окупаемость = 100%",
+                annotation_position="top right",
+            )
+            fig_pc.update_layout(
+                **{**PLOTLY_LAYOUT, "height": 360},
+                xaxis_title="Месяцев с момента регистрации клиента",
+                yaxis_title="Накопленный возврат, % от расхода",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            )
+            st.plotly_chart(fig_pc, use_container_width=True)
+            st.caption(
+                "Берём каждую когорту, считаем сколько вернулось от потраченного на её "
+                "привлечение к месяцу M+k, и усредняем по всем когортам. Пересечение "
+                "линии 100% = break-even. Чем дальше кривая уходит за 100% — тем выгоднее реклама."
+            )
+
+        # ─── Break-even таблица по когортам ────────────────────
+        st.markdown(
+            '<div class="section-title">Окупаемость по когортам — кто когда вышел в плюс</div>',
+            unsafe_allow_html=True,
+        )
+
+        be_show = pb.reset_index()
+        # Колонки для таблицы: ключевые M+ горизонты
+        key_horizons = [k for k in (0, 1, 3, 6, 12) if f"cum_M+{k}" in be_show.columns]
+        # Считаем коэффициенты return_M+k = cum_M+k / ad_spend
+        for k in key_horizons:
+            be_show[f"return_m{k}"] = be_show[f"cum_M+{k}"] / be_show["ad_spend"] * 100
+
+        be_show["cohort_label"] = be_show.iloc[:, 0].apply(
+            lambda d: fmt_month_ru(d, "short_year")
+        )
+
+        # Финальная таблица
+        cols_order = ["cohort_label", "clients", "ad_spend", "cac"]
+        cols_rename = {
+            "cohort_label": "Когорта",
+            "clients": "Клиентов",
+            "ad_spend": "Расход, ₽",
+            "cac": "CAC, ₽",
+        }
+        for k in key_horizons:
+            cols_order.append(f"return_m{k}")
+            cols_rename[f"return_m{k}"] = f"Возврат M+{k}, %"
+        cols_order.append("payback_month")
+        cols_rename["payback_month"] = "Окупилось на M+"
+
+        be_table = be_show[cols_order].rename(columns=cols_rename)
+
+        column_config = {
+            "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+            "CAC, ₽": st.column_config.NumberColumn(format="%.0f"),
+            "Клиентов": st.column_config.NumberColumn(format="%d"),
+            "Окупилось на M+": st.column_config.NumberColumn(
+                format="%.0f", help="Через сколько месяцев когорта окупила свой CAC. Пусто = ещё не окупилась."
+            ),
+        }
+        for k in key_horizons:
+            column_config[f"Возврат M+{k}, %"] = st.column_config.ProgressColumn(
+                format="%.0f%%", min_value=0, max_value=200,
+                help=f"Накопленный возврат к месяцу M+{k} как % от расхода на эту когорту",
+            )
+
+        st.dataframe(
+            be_table, use_container_width=True, hide_index=True,
+            column_config=column_config,
+        )
+
+        # ─── Инсайт: сравнение «эры» — старый vs новый аккаунт ─
+        # В контексте проекта: в ноябре 2025 запустили «новый» аккаунт Я.Директа,
+        # CAC рухнул в 8×. Покажем явное сравнение.
+        cutoff = pd.Timestamp("2025-11-01")
+        pb_idx_dt = pd.to_datetime(pb.index)
+        old_era = pb[pb_idx_dt < cutoff]
+        new_era = pb[pb_idx_dt >= cutoff]
+
+        if not old_era.empty and not new_era.empty:
+            def _era_avg_payback(df):
+                payback = df["payback_month"].dropna()
+                payback = payback[payback >= 0]
+                return payback.mean() if not payback.empty else None
+
+            def _era_cac(df):
+                if df["clients"].sum() > 0:
+                    return df["ad_spend"].sum() / df["clients"].sum()
+                return None
+
+            old_cac = _era_cac(old_era)
+            new_cac = _era_cac(new_era)
+            old_pb_avg = _era_avg_payback(old_era)
+            new_pb_avg = _era_avg_payback(new_era)
+
+            st.markdown(
+                '<div class="section-title">Сравнение эр Я.Директа: до ноября 2025 vs после</div>',
+                unsafe_allow_html=True,
+            )
+
+            ec1, ec2 = st.columns(2)
+            ec1.markdown(kpi_card(
+                "Старый аккаунт (до 11.2025)",
+                f"CAC {fmt_rub(old_cac) if old_cac else '—'}",
+                f"{int(old_era['clients'].sum())} клиентов · "
+                f"окупаемость {old_pb_avg:.1f} мес" if old_pb_avg else f"{int(old_era['clients'].sum())} клиентов · не окупились",
+                kind="red",
+                tooltip="Когорты до ноября 2025 — эра «старого аккаунта Директа» с высоким CPC и низким CTR.",
+            ), unsafe_allow_html=True)
+            ec2.markdown(kpi_card(
+                "Новый аккаунт (с 11.2025)",
+                f"CAC {fmt_rub(new_cac) if new_cac else '—'}",
+                f"{int(new_era['clients'].sum())} клиентов · "
+                f"окупаемость {new_pb_avg:.1f} мес" if new_pb_avg else f"{int(new_era['clients'].sum())} клиентов · ещё мало данных",
+                kind="green",
+                tooltip="Когорты с ноября 2025 — новый аккаунт Директа с принципиально другой экономикой.",
+            ), unsafe_allow_html=True)
+
+            if old_cac and new_cac and old_cac > 0:
+                ratio = old_cac / new_cac
+                st.caption(
+                    f"💡 Новый аккаунт привлекает клиента в <b>{ratio:.1f}× дешевле</b> старого "
+                    f"({fmt_rub(old_cac)} → {fmt_rub(new_cac)}). Это ключевой драйвер ROMI: "
+                    f"при том же бюджете клиентов привлекается в {ratio:.1f} раза больше.",
+                    unsafe_allow_html=True,
+                )
+
+
+# ============================================================
 #                       Детали (свёрнутые)
 # ============================================================
 
