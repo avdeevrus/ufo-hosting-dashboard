@@ -262,13 +262,13 @@ st.markdown(
     .period-group-title {{
         color: {PALETTE['muted']}; font-size: 0.66rem; font-weight: 700;
         text-transform: uppercase; letter-spacing: 0.8px;
-        margin: 0.7rem 0 0.25rem 0.15rem;
+        margin: 0.7rem 0 0.35rem 0.15rem;
+        display: block;
     }}
-    .period-group-title:first-of-type {{ margin-top: 0; }}
 
     /* Тело popover-меню (живёт в портале, селектор прямой) */
     [data-testid="stPopoverBody"] {{
-        padding: 0.85rem 0.85rem !important; min-width: 280px;
+        padding: 0.95rem 0.85rem 0.85rem !important; min-width: 280px;
         background: #ffffff !important;
         box-shadow: 0 12px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06) !important;
         border: 1px solid {PALETTE['border']} !important;
@@ -278,6 +278,20 @@ st.markdown(
     /* Сжимаем вертикальный gap между кнопками */
     [data-testid="stPopoverBody"] [data-testid="stVerticalBlock"] {{ gap: 0 !important; }}
     [data-testid="stPopoverBody"] [data-testid="stElementContainer"] {{ margin-bottom: 0 !important; }}
+    /* После markdown-заголовка группы нужен «воздух» перед следующим виджетом
+       (особенно перед stColumns с двумя date_input — иначе их labels наезжают). */
+    [data-testid="stPopoverBody"] [data-testid="stElementContainer"]:has(.period-group-title) {{
+        margin-bottom: 0.3rem !important;
+    }}
+    /* Горизонтальный блок (st.columns) внутри popover — для двух date_input */
+    [data-testid="stPopoverBody"] [data-testid="stHorizontalBlock"] {{
+        margin-top: 0.3rem !important; gap: 0.5rem !important;
+    }}
+    /* Label у date_input — компактнее и без слипания с заголовком */
+    [data-testid="stPopoverBody"] [data-testid="stWidgetLabel"] {{
+        font-size: 0.78rem !important; margin-bottom: 0.2rem !important;
+        color: {PALETTE['muted']} !important;
+    }}
 
     /* Кнопки-пресеты — лево-выровненные, компактные */
     [data-testid="stPopoverBody"] [data-testid="stBaseButton-tertiary"],
