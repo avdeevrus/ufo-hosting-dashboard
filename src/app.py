@@ -190,6 +190,29 @@ def plural_ru(n, one, few, many):
     return many
 
 
+_RU_MONTHS_SHORT = ["", "Янв", "Фев", "Мар", "Апр", "Май", "Июн",
+                    "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+_RU_MONTHS_FULL = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                   "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+_RU_MONTHS_LOW = ["", "январь", "февраль", "март", "апрель", "май", "июнь",
+                  "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+
+def fmt_month_ru(dt, kind="short_year"):
+    """Форматирует месяц на русском. kind:
+    - 'short_year' → 'Авг 2025'
+    - 'full_year'  → 'Август 2025'
+    - 'low_year'   → 'август 2025'"""
+    if pd.isna(dt):
+        return "—"
+    dt = pd.Timestamp(dt)
+    if kind == "full_year":
+        return f"{_RU_MONTHS_FULL[dt.month]} {dt.year}"
+    if kind == "low_year":
+        return f"{_RU_MONTHS_LOW[dt.month]} {dt.year}"
+    return f"{_RU_MONTHS_SHORT[dt.month]} {dt.year}"
+
+
 def kpi_card(label: str, value: str, delta: str = "", kind: str = "", delta_kind: str = "neutral"):
     """Карточка KPI с фиксированным стилем."""
     klass = f"kpi-card {kind}".strip()
@@ -520,14 +543,60 @@ st.markdown(
 
 
 # ============================================================
+#                       Покрытие данными
+# ============================================================
+
+coverage = M.data_coverage(orders, ads)
+if not coverage.empty:
+    months_with_orders = coverage[coverage["has_orders"]]["month"].tolist()
+    months_only_ads = coverage[(coverage["has_ads"]) & (~coverage["has_orders"])]["month"].tolist()
+    months_only_orders = coverage[(coverage["has_orders"]) & (~coverage["has_ads"])]["month"].tolist()
+
+    st.markdown('<div class="section-title">Покрытие данными по периоду</div>', unsafe_allow_html=True)
+
+    # Лента месяцев
+    cells_html = []
+    for _, row in coverage.iterrows():
+        m_label = fmt_month_ru(row["month"], "short_year")
+        if row["has_orders"] and row["has_ads"]:
+            bg = "#dcfce7"; border = "#86efac"; icon = "✓"; tip = f"CSV: {int(row['orders_count'])} оплат · Директ: {fmt_rub(row['ads_spend'])}"
+        elif row["has_ads"] and not row["has_orders"]:
+            bg = "#fef9c3"; border = "#facc15"; icon = "⚠"; tip = f"Только Директ: {fmt_rub(row['ads_spend'])}. Нет CSV выгрузки"
+        elif row["has_orders"] and not row["has_ads"]:
+            bg = "#dbeafe"; border = "#93c5fd"; icon = "○"; tip = f"Только CSV: {int(row['orders_count'])} оплат. Нет данных Директа"
+        else:
+            bg = "#f1f5f9"; border = "#cbd5e1"; icon = "·"; tip = "Нет данных"
+        cells_html.append(
+            f'<div title="{tip}" style="flex:1 1 0; min-width:68px; background:{bg}; '
+            f'border:1px solid {border}; border-radius:8px; padding:0.5rem 0.3rem; text-align:center;">'
+            f'<div style="font-size:1rem; line-height:1; margin-bottom:0.25rem;">{icon}</div>'
+            f'<div style="font-size:0.7rem; color:{PALETTE["text"]}; font-weight:600; white-space:nowrap;">{m_label}</div>'
+            f'</div>'
+        )
+    st.markdown(
+        f'<div style="display:flex; gap:0.3rem; flex-wrap:wrap;">{"".join(cells_html)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    n_only_ads = len(months_only_ads)
+    if n_only_ads > 0:
+        missing_list = ", ".join(fmt_month_ru(m, "low_year") for m in months_only_ads)
+        st.warning(
+            f"**Не хватает CSV-выгрузок за {n_only_ads} "
+            f"{plural_ru(n_only_ads, 'месяц', 'месяца', 'месяцев')}:** {missing_list}.  \n"
+            f"Запросите у клиента «Содержимое заказов» из админки UFO Hosting за эти периоды — "
+            f"тогда ROMI пересчитается с реальным доходом.",
+            icon="📋",
+        )
+
+
+# ============================================================
 #                       Главные KPI
 # ============================================================
 
-ck = M.comparable_kpi(orders, ads)
-kf = M.compute_kpi(orders, ads)
-if ck is None:
-    ck = kf
-
+# Полный KPI за выбранный период (без отрезания до overlap).
+# Пользователь видит реальные расходы на Директ за весь период работы.
+ck = M.compute_kpi(orders, ads)
 revenue_attr = ck.revenue * attribution_factor
 net = revenue_attr - ck.spend
 romi_pct = (net / ck.spend * 100) if ck.spend else 0.0

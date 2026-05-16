@@ -488,3 +488,41 @@ def cohort_ltv_forecast(orders: pd.DataFrame, horizon_months: int = 12) -> pd.Da
 
     result = result.round(0)
     return result
+
+
+# ---------- Покрытие данными ----------
+
+def data_coverage(orders: pd.DataFrame, ads: pd.DataFrame) -> pd.DataFrame:
+    """Помесячная карта покрытия: что есть в CSV (платежи) и в Я.Директ (расходы).
+    Возвращает DataFrame с колонками: month, has_orders, has_ads, orders_count, ads_spend."""
+    paid = _paid(orders)
+    pay_months = set(paid["payment_month"].dropna().unique()) if not paid.empty else set()
+    ad_months = set(ads["month"].dropna().unique()) if not ads.empty else set()
+
+    all_months = pay_months | ad_months
+    if not all_months:
+        return pd.DataFrame()
+
+    months_sorted = sorted(all_months)
+    # дополним пропуски: от min до max — все месяцы
+    full_range = pd.date_range(
+        start=min(months_sorted), end=max(months_sorted), freq="MS"
+    )
+
+    orders_by_month = (paid.groupby("payment_month").size()
+                       if not paid.empty else pd.Series(dtype=int))
+    spend_by_month = (ads.groupby("month")["spend_rub"].sum()
+                      if not ads.empty else pd.Series(dtype=float))
+
+    rows = []
+    for m in full_range:
+        has_o = m in pay_months
+        has_a = m in ad_months
+        rows.append({
+            "month": m,
+            "has_orders": has_o,
+            "has_ads": has_a,
+            "orders_count": int(orders_by_month.get(m, 0)) if has_o else 0,
+            "ads_spend": float(spend_by_month.get(m, 0.0)) if has_a else 0.0,
+        })
+    return pd.DataFrame(rows)
