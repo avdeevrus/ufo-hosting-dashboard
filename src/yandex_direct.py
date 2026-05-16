@@ -49,9 +49,11 @@ def get_credentials() -> DirectCredentials | None:
 
 def fetch_campaign_report(creds: DirectCredentials,
                           date_from: str,
-                          date_to: str) -> pd.DataFrame:
+                          date_to: str,
+                          _cache_buster: str = "") -> pd.DataFrame:
     """Тянем отчёт по кампаниям за период (YYYY-MM-DD).
     Возвращаем DataFrame с колонками: date, campaign, impressions, clicks, spend_rub.
+    _cache_buster позволяет принудительно обновить кэш Streamlit при ручной синхронизации.
     """
     import io
     headers = {

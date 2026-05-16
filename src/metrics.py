@@ -526,3 +526,141 @@ def data_coverage(orders: pd.DataFrame, ads: pd.DataFrame) -> pd.DataFrame:
             "ads_spend": float(spend_by_month.get(m, 0.0)) if has_a else 0.0,
         })
     return pd.DataFrame(rows)
+
+
+# ---------- Churn-анализ ----------
+
+def churn_analysis(orders: pd.DataFrame,
+                   at_risk_days: int = 30,
+                   churned_days: int = 90,
+                   ref_date: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Сегментирует клиентов по «здоровью»:
+    - Активный: последняя оплата ≤ at_risk_days назад
+    - Под риском: last_payment в окне (at_risk_days, churned_days]
+    - Отток: last_payment > churned_days назад
+    Reference date = max payment_date (если нет — сегодня)."""
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    if ref_date is None:
+        ref_date = paid["payment_date"].max()
+    last = (paid.groupby("client_key")
+              .agg(client_name=("client_name", "first"),
+                   first_payment=("payment_date", "min"),
+                   last_payment=("payment_date", "max"),
+                   orders=("order_id", "count"),
+                   total_paid=("payment_amount", "sum"))
+              .reset_index())
+    last["days_since_last"] = (ref_date - last["last_payment"]).dt.days
+    def _segment(d):
+        if d <= at_risk_days:
+            return "Активный"
+        if d <= churned_days:
+            return "Под риском"
+        return "Отток"
+    last["segment"] = last["days_since_last"].apply(_segment)
+    return last.sort_values("total_paid", ascending=False)
+
+
+def churn_summary(orders: pd.DataFrame, at_risk_days: int = 30, churned_days: int = 90) -> dict:
+    df = churn_analysis(orders, at_risk_days, churned_days)
+    if df.empty:
+        return {"active": 0, "at_risk": 0, "churned": 0, "churn_rate": 0.0, "at_risk_revenue": 0.0}
+    n_total = len(df)
+    n_active = int((df["segment"] == "Активный").sum())
+    n_risk = int((df["segment"] == "Под риском").sum())
+    n_churn = int((df["segment"] == "Отток").sum())
+    at_risk_revenue = float(df.loc[df["segment"] == "Под риском", "total_paid"].sum())
+    churn_rate = n_churn / n_total * 100 if n_total else 0.0
+    return {
+        "active": n_active,
+        "at_risk": n_risk,
+        "churned": n_churn,
+        "churn_rate": churn_rate,
+        "at_risk_revenue": at_risk_revenue,
+        "total_clients": n_total,
+    }
+
+
+# ---------- MRR и Net Revenue Retention ----------
+
+def mrr_by_month(orders: pd.DataFrame) -> pd.DataFrame:
+    """Помесячная выручка (proxy для MRR в SaaS-смысле — мы считаем фактические
+    оплаты за месяц). Возвращает: month, mrr, new_mrr (от новых клиентов),
+    expansion_mrr (от старых), prev_mrr, growth_pct."""
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    # доход за каждый месяц
+    rev_by_month = paid.groupby("payment_month")["payment_amount"].sum()
+    # от новых клиентов
+    paid = paid.assign(reg_month=paid["registration_date"].dt.to_period("M").dt.to_timestamp())
+    new_rev = (paid[paid["payment_month"] == paid["reg_month"]]
+                .groupby("payment_month")["payment_amount"].sum())
+    out = pd.DataFrame({"mrr": rev_by_month})
+    out["new_mrr"] = new_rev.reindex(out.index).fillna(0)
+    out["expansion_mrr"] = out["mrr"] - out["new_mrr"]
+    out["prev_mrr"] = out["mrr"].shift(1)
+    out["growth_pct"] = (out["mrr"] - out["prev_mrr"]) / out["prev_mrr"].replace(0, np.nan) * 100
+    return out.reset_index()
+
+
+def net_revenue_retention(orders: pd.DataFrame) -> pd.DataFrame:
+    """Для каждой когорты регистрации: NRR в M+1 = доход в M+1 / доход в M+0 × 100%.
+    Показывает «удержание выручки» (не клиентов!) — есть ли expansion."""
+    cohort_rev = build_cohort_table(orders, basis="registration")
+    if cohort_rev.empty or cohort_rev.shape[1] < 2:
+        return pd.DataFrame()
+    m0 = cohort_rev.iloc[:, 0]
+    nrr = pd.DataFrame({"M+0": m0})
+    for i, col in enumerate(cohort_rev.columns[1:], start=1):
+        nrr[col] = cohort_rev[col] / m0.replace(0, np.nan) * 100
+    return nrr.round(1)
+
+
+# ---------- Pareto-сегментация клиентов ----------
+
+def pareto_segmentation(orders: pd.DataFrame) -> pd.DataFrame:
+    """ABC-классификация: A (top 20% клиентов, ~80% выручки), B (следующие 30%),
+    C (оставшиеся ~50%). Помогает решить кого удерживать в первую очередь."""
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+    by_client = (paid.groupby("client_key")
+                   .agg(client_name=("client_name", "first"),
+                        orders=("order_id", "count"),
+                        total_paid=("payment_amount", "sum"))
+                   .reset_index()
+                   .sort_values("total_paid", ascending=False))
+    total = by_client["total_paid"].sum()
+    if total <= 0:
+        return by_client
+    by_client["cum_share"] = by_client["total_paid"].cumsum() / total
+    by_client["rank_share"] = (by_client.reset_index().index + 1) / len(by_client)
+
+    def _abc(row):
+        if row["cum_share"] <= 0.80:
+            return "A"
+        if row["cum_share"] <= 0.95:
+            return "B"
+        return "C"
+
+    by_client["segment"] = by_client.apply(_abc, axis=1)
+    return by_client
+
+
+def pareto_summary(orders: pd.DataFrame) -> dict:
+    """Сводка по Pareto: количество клиентов и доход по каждому сегменту."""
+    df = pareto_segmentation(orders)
+    if df.empty:
+        return {}
+    total_clients = len(df)
+    total_revenue = float(df["total_paid"].sum())
+    out = {"total_clients": total_clients, "total_revenue": total_revenue}
+    for seg in ("A", "B", "C"):
+        sub = df[df["segment"] == seg]
+        out[f"{seg}_clients"] = int(len(sub))
+        out[f"{seg}_revenue"] = float(sub["total_paid"].sum())
+        out[f"{seg}_share_clients"] = len(sub) / total_clients * 100 if total_clients else 0
+        out[f"{seg}_share_revenue"] = sub["total_paid"].sum() / total_revenue * 100 if total_revenue else 0
+    return out

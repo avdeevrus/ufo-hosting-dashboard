@@ -163,11 +163,77 @@ st.markdown(
     /* Плотнее отступы alerts */
     [data-testid="stAlert"] {{ padding: 0.7rem 0.95rem !important; }}
 
+    /* KPI tooltip — CSS-only, без JS */
+    .kpi-tip {{
+        display: inline-block; margin-left: 0.35rem; cursor: help;
+        color: {PALETTE['muted']}; font-size: 0.78rem; font-weight: 400;
+        position: relative; line-height: 1; vertical-align: middle;
+    }}
+    .kpi-tip:hover::after {{
+        content: attr(data-tip);
+        position: absolute; bottom: calc(100% + 6px); left: 50%;
+        transform: translateX(-50%);
+        background: {PALETTE['text']}; color: #fff;
+        padding: 0.5rem 0.7rem; border-radius: 6px; font-size: 0.72rem;
+        line-height: 1.4; font-weight: 400;
+        width: max-content; max-width: 260px;
+        white-space: normal; text-transform: none; letter-spacing: 0;
+        z-index: 1000; pointer-events: none;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+    }}
+    .kpi-tip:hover::before {{
+        content: ""; position: absolute; bottom: calc(100% + 1px); left: 50%;
+        transform: translateX(-50%);
+        border: 5px solid transparent; border-top-color: {PALETTE['text']};
+        z-index: 1000; pointer-events: none;
+    }}
+
     /* Footer */
     .ufo-footer {{
         color: {PALETTE['muted']}; font-size: 0.78rem; text-align: center;
         margin-top: 1.5rem; padding-top: 0.85rem;
         border-top: 1px solid {PALETTE['border']};
+    }}
+
+    /* Mobile responsive */
+    @media (max-width: 900px) {{
+        [data-testid="stHorizontalBlock"] {{
+            flex-wrap: wrap !important;
+        }}
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+            flex: 1 1 calc(50% - 0.4rem) !important;
+            min-width: calc(50% - 0.4rem) !important;
+        }}
+        .ufo-hero {{ flex-direction: column; align-items: flex-start; gap: 0.6rem; }}
+        .ufo-hero h1 {{ font-size: 1.4rem; }}
+        .kpi-card .kpi-value {{ font-size: 1.35rem; }}
+    }}
+    @media (max-width: 560px) {{
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }}
+        .main .block-container,
+        section.main > div > div > div.block-container,
+        [data-testid="stMainBlockContainer"] {{
+            padding-left: 0.9rem !important;
+            padding-right: 0.9rem !important;
+        }}
+    }}
+
+    /* Печать в PDF (Cmd+P → Save as PDF) */
+    @media print {{
+        [data-testid="stSidebar"], header, .stDeployButton,
+        [data-testid="stToolbar"], .stApp > header {{ display: none !important; }}
+        .main .block-container,
+        section.main > div > div > div.block-container,
+        [data-testid="stMainBlockContainer"] {{
+            padding: 0 !important; max-width: none !important;
+        }}
+        .kpi-card {{ break-inside: avoid; }}
+        .section-title {{ break-after: avoid; }}
+        .ufo-footer {{ display: none; }}
+        body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
     }}
     </style>
     """,
@@ -237,13 +303,20 @@ def fmt_month_ru(dt, kind="short_year"):
     return f"{_RU_MONTHS_SHORT[dt.month]} {dt.year}"
 
 
-def kpi_card(label: str, value: str, delta: str = "", kind: str = "", delta_kind: str = "neutral"):
-    """Карточка KPI с фиксированным стилем."""
+def kpi_card(label: str, value: str, delta: str = "", kind: str = "",
+             delta_kind: str = "neutral", tooltip: str = ""):
+    """Карточка KPI с фиксированным стилем. tooltip — текст подсказки при наведении на ⓘ."""
     klass = f"kpi-card {kind}".strip()
     delta_html = f'<div class="kpi-delta {delta_kind}">{delta}</div>' if delta else ""
+    tip_html = ""
+    if tooltip:
+        tip_safe = tooltip.replace('"', '&quot;').replace("\n", " ")
+        tip_html = (
+            f'<span class="kpi-tip" data-tip="{tip_safe}">ⓘ</span>'
+        )
     return f"""
     <div class="{klass}">
-      <div class="kpi-label">{label}</div>
+      <div class="kpi-label">{label}{tip_html}</div>
       <div class="kpi-value">{value}</div>
       {delta_html}
     </div>
@@ -330,16 +403,31 @@ with st.sidebar:
                 key="yd_sync_to",
                 format="DD.MM.YYYY",
             )
-            if st.button("Подтянуть статистику", use_container_width=True, key="yd_sync_btn", type="primary"):
+
+            @st.cache_data(ttl=86400, show_spinner=False)
+            def _cached_yd_report(date_from: str, date_to: str, token_hash: str):
+                from yandex_direct import (
+                    fetch_campaign_report, to_ads_dataframe, DirectCredentials,
+                )
+                creds = DirectCredentials(
+                    token=_yd_creds_global.token,
+                    client_login=_yd_creds_global.client_login,
+                )
+                raw = fetch_campaign_report(creds, date_from=date_from, date_to=date_to)
+                return to_ads_dataframe(raw)
+
+            col_btn1, col_btn2 = st.columns(2)
+            do_sync = col_btn1.button("Подтянуть", use_container_width=True, key="yd_sync_btn", type="primary")
+            force = col_btn2.button("Обновить", use_container_width=True, key="yd_force_btn",
+                                    help="Принудительно сбросить кэш и запросить заново")
+            if force:
+                _cached_yd_report.clear()
+                do_sync = True
+            if do_sync:
                 try:
-                    from yandex_direct import fetch_campaign_report, to_ads_dataframe
+                    token_hash = hash(_yd_creds_global.token) & 0xFFFF  # короткий хэш, чтобы не светить токен в кэш-ключе
                     with st.spinner("Тяну отчёт из Я.Директ (до минуты)…"):
-                        raw = fetch_campaign_report(
-                            _yd_creds_global,
-                            date_from=str(sync_from),
-                            date_to=str(sync_to),
-                        )
-                        api_ads = to_ads_dataframe(raw)
+                        api_ads = _cached_yd_report(str(sync_from), str(sync_to), str(token_hash))
                     if api_ads.empty:
                         st.warning("API вернул пустой отчёт.")
                     else:
@@ -348,13 +436,12 @@ with st.sidebar:
                             f"Подтянуто {len(api_ads)} строк, "
                             f"{api_ads['spend_rub'].sum():,.0f} ₽".replace(",", " ")
                         )
-                        st.cache_data.clear()
                         st.rerun()
                 except Exception as e:
                     st.error(str(e))
             if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
                 n = len(st.session_state["yd_api_ads"])
-                st.caption(f"В сессии данных из API: {n} строк")
+                st.caption(f"В сессии: {n} строк (кэш на 24 часа)")
 
     st.divider()
 
@@ -528,6 +615,21 @@ with placeholder_filters:
         d_to = min(d_to, pd.Timestamp(overall_max))
         st.caption(f"📅 {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}")
 
+    st.divider()
+    # PDF / Print
+    import streamlit.components.v1 as components
+    pdf_clicked = st.button(
+        "📄 Сохранить отчёт в PDF",
+        use_container_width=True,
+        help="Откроется системный диалог печати — выберите «Сохранить как PDF».",
+        key="print_pdf_btn",
+    )
+    if pdf_clicked:
+        components.html(
+            "<script>setTimeout(()=>{ window.parent.print(); }, 100);</script>",
+            height=0,
+        )
+
     attribution_pct = st.slider(
         "Атрибуция платного трафика, %",
         min_value=10, max_value=100, value=100, step=5,
@@ -633,12 +735,14 @@ c1.markdown(kpi_card(
     "Расход на Директ",
     fmt_rub(ck.spend),
     f"за {period_label}", kind="red", delta_kind="neutral",
+    tooltip="Сумма списаний в Яндекс.Директе за выбранный период. Тянется из XLSX-отчётов или из API после модерации Яндекса.",
 ), unsafe_allow_html=True)
 c2.markdown(kpi_card(
     "Доход (оплаты)",
     fmt_rub(ck.revenue),
     f"{ck.orders_paid:,} {plural_ru(ck.orders_paid, 'оплата', 'оплаты', 'оплат')}".replace(",", " "),
     kind="green",
+    tooltip="Реально поступившие деньги от клиентов за период. Из CSV-выгрузок «Содержимое заказов» (статус «Оплачен»).",
 ), unsafe_allow_html=True)
 romi_kind = "up" if net >= 0 else "down"
 romi_arrow = "↑" if net >= 0 else "↓"
@@ -648,21 +752,33 @@ c3.markdown(kpi_card(
     f"{romi_pct:+.1f}%",
     f"{romi_arrow} {fmt_rub(abs(net))} {'прибыли' if net >= 0 else 'к окупаемости'}",
     kind=romi_color_kind, delta_kind=romi_kind,
+    tooltip="Return On Marketing Investment = (Доход × атрибуция − Расход) / Расход. >0 — реклама окупается. Для хостинга норма раскрывается на горизонте 6–12 мес. за счёт повторных оплат.",
 ), unsafe_allow_html=True)
 c4.markdown(kpi_card(
     "Клиентов",
     fmt_num(ck.unique_clients),
     f"новых: {ck.new_clients} · повторных: {ck.repeat_clients}",
     kind="primary",
+    tooltip="Уникальные клиенты с хотя бы одной оплатой в периоде. Новый = первая оплата клиента помечена «Новый». Повторный = оплата клиента, зарегистрированного раньше.",
 ), unsafe_allow_html=True)
 
 st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
 
 # Row 2 — второстепенные 4 плитки
 c5, c6, c7, c8 = st.columns(4)
-c5.markdown(kpi_card("CAC", fmt_rub(cac), "стоимость нового клиента"), unsafe_allow_html=True)
-c6.markdown(kpi_card("ARPU", fmt_rub(ck.arpu), "доход на клиента"), unsafe_allow_html=True)
-c7.markdown(kpi_card("Средний чек", fmt_rub(ck.avg_check), f"{ck.avg_orders_per_client:.2f} оплат на клиента"), unsafe_allow_html=True)
+c5.markdown(kpi_card(
+    "CAC", fmt_rub(cac), "стоимость нового клиента",
+    tooltip="Customer Acquisition Cost = Расход на рекламу / число новых клиентов. Чем ниже, тем дешевле привлечение.",
+), unsafe_allow_html=True)
+c6.markdown(kpi_card(
+    "ARPU", fmt_rub(ck.arpu), "доход на клиента",
+    tooltip="Average Revenue Per User = Доход / уникальных клиентов. Сколько в среднем приносит один клиент за период.",
+), unsafe_allow_html=True)
+c7.markdown(kpi_card(
+    "Средний чек", fmt_rub(ck.avg_check),
+    f"{ck.avg_orders_per_client:.2f} оплат на клиента",
+    tooltip="Средняя сумма одной оплаты. Низкий чек × много оплат = ежемесячные продления. Высокий чек × мало = годовые тарифы.",
+), unsafe_allow_html=True)
 ltv_kind = "up" if ltv_cac >= 1 else "down"
 ltv_color = "green" if ltv_cac >= 1 else "red"
 c8.markdown(kpi_card(
@@ -670,6 +786,7 @@ c8.markdown(kpi_card(
     f"{ltv_cac:.2f}×",
     "цель ≥ 1×, отлично ≥ 3×",
     kind=ltv_color, delta_kind=ltv_kind,
+    tooltip="Отношение пожизненной ценности клиента к стоимости его привлечения. 1× — окупается, 3× — прибыльная модель. У хостинга растёт во времени за счёт продлений.",
 ), unsafe_allow_html=True)
 
 
@@ -911,6 +1028,154 @@ with col_right:
 
 
 # ============================================================
+#                       Churn / здоровье клиентской базы
+# ============================================================
+
+ch_sum = M.churn_summary(orders)
+if ch_sum:
+    st.markdown('<div class="section-title">Здоровье клиентской базы</div>', unsafe_allow_html=True)
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    cc1.markdown(kpi_card(
+        "Активные",
+        fmt_num(ch_sum["active"]),
+        f"оплата ≤ 30 дней назад · {ch_sum['active']/max(ch_sum['total_clients'],1)*100:.0f}% базы",
+        kind="green",
+        tooltip="Клиенты с оплатой не далее 30 дней назад. Это «работающие» клиенты, активно генерирующие выручку.",
+    ), unsafe_allow_html=True)
+    cc2.markdown(kpi_card(
+        "Под риском",
+        fmt_num(ch_sum["at_risk"]),
+        f"31–90 дней без оплат · {fmt_rub(ch_sum['at_risk_revenue'])} в потенциале",
+        kind="orange",
+        tooltip="Не платили 31–90 дней. Это «зона спасения» — пока ещё можно вернуть скидкой, письмом, звонком. После 90 дней — статистически уже отток.",
+    ), unsafe_allow_html=True)
+    cc3.markdown(kpi_card(
+        "Отток",
+        fmt_num(ch_sum["churned"]),
+        f"> 90 дней без оплат",
+        kind="red",
+        tooltip="Клиенты, не платившие более 90 дней. С большой вероятностью уже не вернутся. Включаются в расчёт churn rate.",
+    ), unsafe_allow_html=True)
+    cc4.markdown(kpi_card(
+        "Churn rate",
+        f"{ch_sum['churn_rate']:.1f}%",
+        f"норма для хостинга: до 5% в месяц",
+        kind="red" if ch_sum["churn_rate"] > 5 else "green",
+        tooltip="Доля клиентов в оттоке от общего числа. Промышленная норма для хостинга — менее 5% месячных оттоков. Выше — повод смотреть продукт и клиентский сервис.",
+    ), unsafe_allow_html=True)
+
+
+# ============================================================
+#                       MRR (Monthly Recurring Revenue)
+# ============================================================
+
+mrr = M.mrr_by_month(orders)
+if not mrr.empty and len(mrr) >= 1:
+    st.markdown('<div class="section-title">MRR · ежемесячная выручка</div>', unsafe_allow_html=True)
+
+    mrr_d = mrr.copy()
+    mrr_d["month_label"] = mrr_d["payment_month"].dt.strftime("%b %Y")
+
+    fig_mrr = go.Figure()
+    fig_mrr.add_bar(
+        x=mrr_d["month_label"], y=mrr_d["new_mrr"],
+        name="От новых клиентов",
+        marker_color=PALETTE["primary"],
+        hovertemplate="%{x}<br>Новые: %{y:,.0f} ₽<extra></extra>",
+    )
+    fig_mrr.add_bar(
+        x=mrr_d["month_label"], y=mrr_d["expansion_mrr"],
+        name="От старых клиентов",
+        marker_color=PALETTE["green"],
+        hovertemplate="%{x}<br>Старые: %{y:,.0f} ₽<extra></extra>",
+    )
+    fig_mrr.update_layout(
+        **PLOTLY_LAYOUT,
+        height=300, barmode="stack",
+        yaxis_title="Выручка, ₽",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    st.plotly_chart(fig_mrr, use_container_width=True)
+
+    last = mrr.iloc[-1]
+    last_growth = last.get("growth_pct")
+    if pd.notna(last_growth):
+        arrow = "↑" if last_growth >= 0 else "↓"
+        color = PALETTE["green"] if last_growth >= 0 else PALETTE["red"]
+        st.caption(
+            f"Последний месяц: **{fmt_rub(last['mrr'])}** · "
+            f"<span style='color:{color}; font-weight:600;'>{arrow} {abs(last_growth):.1f}% MoM</span> · "
+            f"новые: {fmt_rub(last['new_mrr'])}, старые: {fmt_rub(last['expansion_mrr'])}",
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+#                       Pareto-сегментация клиентов
+# ============================================================
+
+par = M.pareto_summary(orders)
+if par:
+    st.markdown('<div class="section-title">Сегментация клиентов · ABC</div>', unsafe_allow_html=True)
+
+    pcol1, pcol2 = st.columns([1, 1.4])
+
+    with pcol1:
+        labels = [
+            f"A · топ ({par['A_clients']} клиентов)",
+            f"B · средние ({par['B_clients']})",
+            f"C · хвост ({par['C_clients']})",
+        ]
+        values = [par["A_revenue"], par["B_revenue"], par["C_revenue"]]
+        fig_p = px.pie(
+            names=labels, values=values, hole=0.55,
+            color_discrete_sequence=[PALETTE["green"], PALETTE["primary"], PALETTE["muted"]],
+        )
+        fig_p.update_traces(
+            textposition="outside",
+            textinfo="percent",
+            textfont=dict(color=PALETTE["text"], size=12),
+            hovertemplate="<b>%{label}</b><br>%{value:,.0f} ₽<br>%{percent}<extra></extra>",
+        )
+        fig_p.update_layout(
+            **{**PLOTLY_LAYOUT, "margin": dict(t=10, l=10, r=10, b=10)},
+            height=280, showlegend=False,
+        )
+        st.plotly_chart(fig_p, use_container_width=True)
+
+    with pcol2:
+        for seg, color, descr in [
+            ("A", PALETTE["green"], "ядро (≈ 80% выручки)"),
+            ("B", PALETTE["primary"], "средний слой"),
+            ("C", PALETTE["muted"], "хвост, низкая выручка"),
+        ]:
+            st.markdown(
+                f"""<div style='padding:0.55rem 0.85rem; margin-bottom:0.35rem;
+                background:#ffffff; border:1px solid {PALETTE['border']}; border-radius:8px;
+                border-left:4px solid {color};
+                display:flex; justify-content:space-between; align-items:center;'>
+                <div>
+                  <div style='font-weight:700; color:{PALETTE['text']};'>Сегмент {seg} · {descr}</div>
+                  <div style='font-size:0.75rem; color:{PALETTE['muted']};'>
+                    {par[f'{seg}_clients']} клиентов ({par[f'{seg}_share_clients']:.0f}% базы)
+                  </div>
+                </div>
+                <div style='text-align:right;'>
+                  <div style='font-weight:700; color:{color};'>{fmt_rub(par[f'{seg}_revenue'])}</div>
+                  <div style='font-size:0.72rem; color:{PALETTE['muted']};'>{par[f'{seg}_share_revenue']:.1f}% выручки</div>
+                </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        st.caption(
+            "Сегмент A — кого нужно удерживать в первую очередь (личный контакт, апсейлы). "
+            "Сегмент B — растить вверх через продление и кросс-продажу. "
+            "Сегмент C — массовые рассылки и автоматизация, тратить на них минимум усилий."
+        )
+
+
+# ============================================================
 #                       Воронка клиентов
 # ============================================================
 
@@ -1117,6 +1382,63 @@ with st.expander("📈 Прогноз LTV когорт"):
             fc_show.iloc[:, :13],
             use_container_width=True,
             column_config={c: st.column_config.NumberColumn(format="%.0f ₽") for c in fc_show.columns[:13]},
+        )
+
+with st.expander("⚠️ Клиенты под риском · вернуть пока не поздно"):
+    risk_df = M.churn_analysis(orders)
+    if not risk_df.empty:
+        risk_only = risk_df[risk_df["segment"] == "Под риском"].copy()
+        if risk_only.empty:
+            st.success("Клиентов под риском нет — все активные.")
+        else:
+            risk_only["first_payment"] = risk_only["first_payment"].dt.date
+            risk_only["last_payment"] = risk_only["last_payment"].dt.date
+            st.dataframe(
+                risk_only.rename(columns={
+                    "client_key": "Клиент (email)",
+                    "client_name": "Имя",
+                    "first_payment": "Первая оплата",
+                    "last_payment": "Последняя оплата",
+                    "days_since_last": "Дней без оплат",
+                    "orders": "Оплат всего",
+                    "total_paid": "Принёс, ₽",
+                })[["Клиент (email)", "Имя", "Последняя оплата",
+                    "Дней без оплат", "Оплат всего", "Принёс, ₽"]],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Принёс, ₽": st.column_config.NumberColumn(format="%.0f"),
+                },
+            )
+            st.caption(
+                f"💡 **{len(risk_only)} клиентов** под риском оттока. "
+                f"Их совокупная LTV — **{fmt_rub(risk_only['total_paid'].sum())}**. "
+                f"Свяжитесь с ними скидкой/звонком до того, как они уйдут в отток (> 90 дней)."
+            )
+
+with st.expander("⭐ Pareto-сегмент A · приоритетные клиенты"):
+    par_df = M.pareto_segmentation(orders)
+    if not par_df.empty:
+        a_clients = par_df[par_df["segment"] == "A"].copy()
+        st.caption(
+            f"Эти {len(a_clients)} клиентов формируют ~80% всей выручки. "
+            f"С ними нужно работать в первую очередь."
+        )
+        st.dataframe(
+            a_clients[["client_key", "client_name", "orders", "total_paid", "cum_share"]]
+              .rename(columns={
+                  "client_key": "Клиент (email)",
+                  "client_name": "Имя",
+                  "orders": "Оплат",
+                  "total_paid": "Принёс, ₽",
+                  "cum_share": "Кумулятивная доля",
+              }),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Принёс, ₽": st.column_config.NumberColumn(format="%.0f"),
+                "Кумулятивная доля": st.column_config.ProgressColumn(
+                    format="%.1f%%", min_value=0, max_value=1
+                ),
+            },
         )
 
 with st.expander("📥 Скачать данные периода"):
