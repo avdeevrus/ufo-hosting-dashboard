@@ -211,8 +211,76 @@ st.markdown(
     .kpi-delta.down {{ color: {PALETTE['red']}; font-weight: 600; }}
     .kpi-delta.neutral {{ color: {PALETTE['muted']}; }}
 
+    /* Hero KPI — крупная плитка главной метрики */
+    .kpi-hero {{
+        background: linear-gradient(135deg, #f0f7ff 0%, #ffffff 70%);
+        border: 1px solid #c9d6ec;
+        border-radius: 12px;
+        padding: 1.4rem 1.6rem;
+        margin-bottom: 0.7rem;
+        display: flex; flex-wrap: wrap; align-items: center; gap: 1.2rem;
+    }}
+    .kpi-hero.red  {{ background: linear-gradient(135deg, #fff5f5 0%, #ffffff 70%); border-color: #f4c7c7; }}
+    .kpi-hero.green {{ background: linear-gradient(135deg, #f0fbf3 0%, #ffffff 70%); border-color: #b9e3c1; }}
+    .kpi-hero-main {{ flex: 1 1 260px; min-width: 0; }}
+    .kpi-hero-label {{
+        color: {PALETTE['muted']}; font-size: 0.78rem; text-transform: uppercase;
+        letter-spacing: 0.6px; font-weight: 700; margin-bottom: 0.35rem;
+    }}
+    .kpi-hero-value {{
+        color: {PALETTE['text']}; font-size: 2.7rem; font-weight: 800;
+        line-height: 1; letter-spacing: -1px;
+    }}
+    .kpi-hero.green .kpi-hero-value {{ color: {PALETTE['green']}; }}
+    .kpi-hero.red   .kpi-hero-value {{ color: {PALETTE['red']}; }}
+    .kpi-hero-sub {{
+        color: {PALETTE['muted']}; font-size: 0.86rem; margin-top: 0.55rem; line-height: 1.5;
+    }}
+    .kpi-hero-delta {{
+        display: inline-block; margin-left: 0.7rem; padding: 0.18rem 0.55rem;
+        border-radius: 6px; font-size: 0.78rem; font-weight: 600;
+        vertical-align: middle;
+    }}
+    .kpi-hero-delta.up   {{ background: #dcfce7; color: {PALETTE['green']}; }}
+    .kpi-hero-delta.down {{ background: #fee2e2; color: {PALETTE['red']}; }}
+    .kpi-hero-delta.neutral {{ background: #f1f5f9; color: {PALETTE['muted']}; }}
+    .kpi-hero-breakdown {{
+        flex: 1 1 360px; display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.6rem;
+    }}
+    .kpi-hero-bd-item {{
+        background: rgba(255,255,255,0.7); border: 1px solid {PALETTE['border']};
+        border-radius: 8px; padding: 0.55rem 0.75rem;
+    }}
+    .kpi-hero-bd-label {{
+        color: {PALETTE['muted']}; font-size: 0.68rem; text-transform: uppercase;
+        letter-spacing: 0.4px; font-weight: 600; margin-bottom: 0.2rem;
+    }}
+    .kpi-hero-bd-value {{ font-weight: 700; color: {PALETTE['text']}; font-size: 0.95rem; }}
+    @media (max-width: 780px) {{
+        .kpi-hero-value {{ font-size: 2rem; }}
+        .kpi-hero-breakdown {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+    }}
+
     /* Уменьшаем gap между колонками */
     [data-testid="stHorizontalBlock"] {{ gap: 0.7rem !important; }}
+
+    /* Авто-инсайты */
+    .insight-row {{ display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 1rem; }}
+    .insight-pill {{
+        flex: 1 1 280px; min-width: 240px; padding: 0.7rem 0.95rem;
+        border-radius: 9px; border: 1px solid; font-size: 0.85rem; line-height: 1.45;
+        display: flex; gap: 0.55rem; align-items: flex-start;
+    }}
+    .insight-pill .ico {{ font-size: 1rem; flex-shrink: 0; line-height: 1.35; }}
+    .insight-pill.good {{ background: #f0fbf3; border-color: #b9e3c1; color: {PALETTE['text']}; }}
+    .insight-pill.warn {{ background: #fef9c3; border-color: #f0c84a; color: {PALETTE['text']}; }}
+    .insight-pill.info {{ background: #f0f7ff; border-color: #c9d6ec; color: {PALETTE['text']}; }}
+    .insight-pill .label {{
+        text-transform: uppercase; letter-spacing: 0.4px; font-size: 0.66rem;
+        font-weight: 700; color: {PALETTE['muted']}; margin-bottom: 0.18rem; display: block;
+    }}
 
     /* Секции */
     .section-title {{
@@ -438,6 +506,105 @@ def kpi_card(label: str, value: str, delta: str = "", kind: str = "",
       {spark_html}
     </div>
     """
+
+
+def _generate_insights(orders_df, ads_df, ck, ms, ch_sum, prev_kpi=None, prev_label=None):
+    """Возвращает list[dict] с автоматическими наблюдениями по данным.
+    Каждый элемент: {kind: good|warn|info, ico, label, text}. Максимум 4."""
+    items = []
+
+    # 1. Overlap ROMI — если расход сильно превышает доход из-за неполных CSV
+    overlap_kpi = M.comparable_kpi(orders_df, ads_df)
+    overlap_period_ = M.overlap_period(orders_df, ads_df)
+    if overlap_kpi is not None and overlap_period_ is not None:
+        ofrom, oto = overlap_period_
+        if overlap_kpi.spend > 0 and ck.spend > overlap_kpi.spend * 1.4:
+            o_romi = (overlap_kpi.revenue - overlap_kpi.spend) / overlap_kpi.spend * 100
+            o_kind = "good" if o_romi >= 0 else "warn"
+            o_ico = "✅" if o_romi >= 0 else "📅"
+            items.append({
+                "kind": o_kind, "ico": o_ico, "label": "Сопоставимый период",
+                "text": (
+                    f"За <b>{fmt_month_ru(ofrom, 'low_year')} – {fmt_month_ru(oto, 'low_year')}</b> "
+                    f"(где есть и CSV, и Директ) реальный ROMI = <b>{o_romi:+.1f}%</b>, "
+                    f"доход {fmt_rub(overlap_kpi.revenue)} vs расход {fmt_rub(overlap_kpi.spend)}."
+                ),
+            })
+
+    # 2. CAC trend (последний vs первый месяц)
+    if not ms.empty and len(ms) >= 3:
+        cac_series = ms[ms["cac"].notna() & (ms["cac"] > 0)]
+        if len(cac_series) >= 2:
+            first_cac = float(cac_series.iloc[0]["cac"])
+            last_cac = float(cac_series.iloc[-1]["cac"])
+            first_m = cac_series.iloc[0]["month"]
+            last_m = cac_series.iloc[-1]["month"]
+            if first_cac > 0 and last_cac > 0:
+                ratio = first_cac / last_cac
+                if ratio >= 2:
+                    items.append({
+                        "kind": "good", "ico": "📉", "label": "CAC снизился",
+                        "text": (
+                            f"Стоимость нового клиента упала в <b>{ratio:.1f}×</b>: с "
+                            f"<b>{fmt_rub(first_cac)}</b> ({fmt_month_ru(first_m, 'low_year')}) до "
+                            f"<b>{fmt_rub(last_cac)}</b> ({fmt_month_ru(last_m, 'low_year')})."
+                        ),
+                    })
+                elif last_cac / first_cac >= 1.3:
+                    growth = (last_cac - first_cac) / first_cac * 100
+                    items.append({
+                        "kind": "warn", "ico": "📈", "label": "CAC вырос",
+                        "text": (
+                            f"Стоимость нового клиента выросла на <b>{growth:+.0f}%</b>: "
+                            f"с <b>{fmt_rub(first_cac)}</b> ({fmt_month_ru(first_m, 'low_year')}) "
+                            f"до <b>{fmt_rub(last_cac)}</b> ({fmt_month_ru(last_m, 'low_year')})."
+                        ),
+                    })
+
+    # 3. Лучший месяц по доходу
+    if not ms.empty and len(ms) >= 2:
+        best_idx = ms["revenue"].idxmax()
+        best_row = ms.loc[best_idx]
+        if best_row["revenue"] > 0:
+            items.append({
+                "kind": "info", "ico": "🏆", "label": "Лучший месяц",
+                "text": (
+                    f"Максимум дохода — <b>{fmt_month_ru(best_row['month'], 'full_year')}</b>: "
+                    f"<b>{fmt_rub(best_row['revenue'])}</b> от "
+                    f"<b>{int(best_row['new_clients'])}</b> новых клиентов."
+                ),
+            })
+
+    # 4. Клиенты под риском
+    if ch_sum and ch_sum.get("at_risk", 0) >= 3:
+        n = ch_sum["at_risk"]
+        items.append({
+            "kind": "warn", "ico": "🔔", "label": "Под риском оттока",
+            "text": (
+                f"<b>{n}</b> {plural_ru(n, 'клиент', 'клиента', 'клиентов')} не платили 31–90 дней. "
+                f"Совокупный LTV — <b>{fmt_rub(ch_sum.get('at_risk_revenue', 0))}</b>. "
+                f"Самое время вернуть скидкой или звонком."
+            ),
+        })
+
+    return items[:4]
+
+
+def _render_insights(items):
+    if not items:
+        return
+    html_items = []
+    for it in items:
+        html_items.append(
+            f'<div class="insight-pill {it["kind"]}">'
+            f'<span class="ico">{it["ico"]}</span>'
+            f'<div><span class="label">{it["label"]}</span>{it["text"]}</div>'
+            f'</div>'
+        )
+    st.markdown(
+        f'<div class="insight-row">{"".join(html_items)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ============================================================
@@ -726,6 +893,74 @@ def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timest
     return (pd.Timestamp(data_min), pd.Timestamp(data_max))
 
 
+def _ru_quarter_label(dt: pd.Timestamp) -> str:
+    q = (dt.month - 1) // 3 + 1
+    return f"Q{q} {dt.year}"
+
+
+def _compute_compare_range(preset: str, cur_from: pd.Timestamp, cur_to: pd.Timestamp):
+    """Возвращает (prev_from, prev_to, cur_label, prev_label) или None если
+    сравнение по пресету не имеет смысла (например, «За всё время»)."""
+    cur_from = pd.Timestamp(cur_from).normalize()
+    cur_to = pd.Timestamp(cur_to).normalize()
+
+    if preset == "За всё время":
+        return None
+
+    if preset == "Сегодня":
+        prev = cur_from - pd.Timedelta(days=1)
+        return prev, prev, f"Сегодня · {cur_from:%d.%m.%Y}", f"Вчера · {prev:%d.%m.%Y}"
+
+    if preset == "Вчера":
+        prev = cur_from - pd.Timedelta(days=1)
+        return prev, prev, f"Вчера · {cur_from:%d.%m.%Y}", f"Позавчера · {prev:%d.%m.%Y}"
+
+    # Календарные «прошлые» — сравниваем с предыдущим полным календарным периодом
+    if preset == "Прошлый месяц":
+        prev_to = cur_from - pd.Timedelta(days=1)
+        prev_from = prev_to.replace(day=1)
+        return prev_from, prev_to, fmt_month_ru(cur_from, "full_year"), fmt_month_ru(prev_from, "full_year")
+
+    if preset == "Прошлый квартал":
+        prev_to = cur_from - pd.Timedelta(days=1)
+        q_idx = (prev_to.month - 1) // 3
+        prev_from = pd.Timestamp(prev_to.year, q_idx * 3 + 1, 1)
+        return prev_from, prev_to, _ru_quarter_label(cur_from), _ru_quarter_label(prev_from)
+
+    # «Этот месяц/квартал/год» — сравниваем same-period-to-date в прошлом
+    if preset == "Этот месяц":
+        prev_month_first = (cur_from - pd.DateOffset(months=1)).replace(day=1)
+        days_into = (cur_to - cur_from).days
+        prev_from = prev_month_first
+        prev_to = prev_from + pd.Timedelta(days=days_into)
+        cur_label = f"{fmt_month_ru(cur_from, 'full_year')} · 1–{cur_to.day}"
+        prev_label = f"{fmt_month_ru(prev_from, 'full_year')} · 1–{prev_to.day}"
+        return prev_from, prev_to, cur_label, prev_label
+
+    if preset == "Этот квартал":
+        q_idx = (cur_from.month - 1) // 3
+        prev_q_idx = (q_idx - 1) % 4
+        prev_year = cur_from.year if q_idx > 0 else cur_from.year - 1
+        prev_from = pd.Timestamp(prev_year, prev_q_idx * 3 + 1, 1)
+        days_into = (cur_to - cur_from).days
+        prev_to = prev_from + pd.Timedelta(days=days_into)
+        return prev_from, prev_to, _ru_quarter_label(cur_from), _ru_quarter_label(prev_from)
+
+    if preset == "Этот год":
+        prev_from = pd.Timestamp(cur_from.year - 1, 1, 1)
+        days_into = (cur_to - cur_from).days
+        prev_to = prev_from + pd.Timedelta(days=days_into)
+        return prev_from, prev_to, f"{cur_from.year}", f"{prev_from.year}"
+
+    # «Последние N дней» и «Произвольный» — предыдущий интервал той же длины
+    length = (cur_to - cur_from)
+    prev_to = cur_from - pd.Timedelta(days=1)
+    prev_from = prev_to - length
+    cur_label = f"{cur_from:%d.%m} – {cur_to:%d.%m.%Y}"
+    prev_label = f"{prev_from:%d.%m} – {prev_to:%d.%m.%Y}"
+    return prev_from, prev_to, cur_label, prev_label
+
+
 # Hero с интегрированным выбором периода (как у Я.Директ)
 hcol_left, hcol_right = st.columns([2.6, 1.6])
 with hcol_left:
@@ -787,20 +1022,25 @@ with placeholder_filters:
             "<script>setTimeout(()=>{ window.parent.print(); }, 100);</script>",
             height=0,
         )
-    st.divider()
-    attribution_pct = st.slider(
-        "Атрибуция платного трафика, %",
-        min_value=10, max_value=100, value=100, step=5,
-        help="100% = весь доход приписываем рекламе. Уменьшите, если значимая часть клиентов приходит из SEO/прямых.",
-    )
-    attribution_factor = attribution_pct / 100.0
 
-    cogs_pct = st.slider(
-        "Себестоимость (COGS), %",
-        min_value=0, max_value=80, value=30, step=5,
-        help="Доля себестоимости от выручки. Для хостинга обычно 25–35% (датацентры, лицензии). Используется для расчёта чистой прибыли.",
-    )
+    with st.expander("⚙️ Настройки расчёта прибыли", expanded=False):
+        cogs_pct = st.slider(
+            "Себестоимость (COGS), %",
+            min_value=0, max_value=80, value=30, step=5,
+            help=(
+                "Доля себестоимости от выручки. Для хостинга обычно 25–35% "
+                "(датацентры, лицензии). Используется в расчёте чистой прибыли: "
+                "Прибыль = Доход − COGS − Расход на рекламу."
+            ),
+        )
+        st.caption(
+            "Атрибуция: все клиенты учтены как от Директа (100%). "
+            "Точная атрибуция появится после внедрения GA4 purchase-событий."
+        )
     cogs_factor = cogs_pct / 100.0
+    # Атрибуция = 100% всегда. Слайдер удалён — создавал иллюзию точности
+    # и был несовместим с другими KPI, которые считались без учёта.
+    attribution_factor = 1.0
 
     # Кнопка «Выйти» — только если включена парольная защита
     if os.environ.get("APP_PASSWORD"):
@@ -925,7 +1165,71 @@ spark_new = _ms["new_clients"].tolist() if not _ms.empty else []
 spark_romi = _ms["romi"].fillna(0).tolist() if not _ms.empty else []
 spark_cac = _ms["cac"].fillna(0).tolist() if not _ms.empty else []
 
-# Row 1 — главные 4 плитки
+# Считаем prev-период один раз, чтобы Hero и блок «Сравнение» использовали общий результат
+compare_range = _compute_compare_range(preset, d_from, d_to)
+prev_kpi = None
+prev_profit = None
+if compare_range is not None:
+    _prev_from, _prev_to, _cur_label, _prev_label = compare_range
+    prev_kpi = M.compute_kpi(
+        M.filter_orders_by_period(orders_all, _prev_from, _prev_to),
+        M.filter_ads_by_period(ads_all, _prev_from, _prev_to),
+    )
+    prev_profit = prev_kpi.revenue - prev_kpi.revenue * cogs_factor - prev_kpi.spend
+
+
+def _hero_delta_html(cur_val, prev_val, *, invert=False, suffix=""):
+    """HTML для плашки дельты «↑ 12.3% vs прошлый». invert=True для метрик,
+    где рост — плохо (например, расход)."""
+    if prev_val is None or prev_val == 0 or pd.isna(prev_val):
+        return ""
+    pct = (cur_val - prev_val) / abs(prev_val) * 100
+    arrow = "↑" if pct >= 0 else "↓"
+    positive = (pct >= 0) if not invert else (pct <= 0)
+    cls = "up" if positive else "down"
+    return f'<span class="kpi-hero-delta {cls}">{arrow} {abs(pct):.1f}%{suffix}</span>'
+
+
+# ─── Hero KPI: Прибыль (большая плитка) ──────────────────────
+profit_hero_kind = "green" if profit >= 0 else "red"
+profit_delta = _hero_delta_html(profit, prev_profit, suffix=" vs прошлый")
+st.markdown(
+    f"""
+    <div class="kpi-hero {profit_hero_kind}">
+      <div class="kpi-hero-main">
+        <div class="kpi-hero-label">Чистая прибыль · {period_label}</div>
+        <div class="kpi-hero-value">{fmt_rub(profit)} {profit_delta}</div>
+        <div class="kpi-hero-sub">
+          Доход <b>{fmt_rub(ck.revenue)}</b> минус себестоимость <b>{fmt_rub(cogs_amount)}</b> ({cogs_pct}%)
+          минус расход на Директ <b>{fmt_rub(ck.spend)}</b> · маржа {profit_margin:+.1f}%
+        </div>
+      </div>
+      <div class="kpi-hero-breakdown">
+        <div class="kpi-hero-bd-item">
+          <div class="kpi-hero-bd-label">Доход</div>
+          <div class="kpi-hero-bd-value" style="color:{PALETTE['green']};">{fmt_rub(ck.revenue)}</div>
+        </div>
+        <div class="kpi-hero-bd-item">
+          <div class="kpi-hero-bd-label">Расход</div>
+          <div class="kpi-hero-bd-value" style="color:{PALETTE['red']};">−{fmt_rub(ck.spend, suffix=' ₽')}</div>
+        </div>
+        <div class="kpi-hero-bd-item">
+          <div class="kpi-hero-bd-label">ROMI</div>
+          <div class="kpi-hero-bd-value" style="color:{PALETTE['green'] if net >= 0 else PALETTE['red']};">{romi_pct:+.1f}%</div>
+        </div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ─── Авто-инсайты ─────────────────────────────────────────────
+# Вычисляем churn_summary раньше — нужно и для инсайтов, и для блока «Здоровье базы» ниже.
+ch_sum_early = M.churn_summary(orders)
+_insights = _generate_insights(orders, ads, ck, _ms, ch_sum_early, prev_kpi=prev_kpi)
+_render_insights(_insights)
+
+# ─── Row 1 — операционные плитки ─────────────────────────────
 c1, c2, c3, c4 = st.columns(4)
 c1.markdown(kpi_card(
     "Расход на Директ",
@@ -950,24 +1254,10 @@ c3.markdown(kpi_card(
     f"{romi_pct:+.1f}%",
     f"{romi_arrow} {fmt_rub(abs(net))} {'прибыли' if net >= 0 else 'к окупаемости'}",
     kind=romi_color_kind, delta_kind=romi_kind,
-    tooltip="Return On Marketing Investment = (Доход × атрибуция − Расход) / Расход. >0 — реклама окупается. Для хостинга норма раскрывается на горизонте 6–12 мес. за счёт повторных оплат.",
+    tooltip="Return On Marketing Investment = (Доход − Расход) / Расход. >0 — реклама окупается. Для хостинга норма раскрывается на горизонте 6–12 мес. за счёт повторных оплат. Атрибуция: 100% (все клиенты как от Директа).",
     spark_values=spark_romi,
 ), unsafe_allow_html=True)
-profit_kind = "green" if profit >= 0 else "red"
-profit_delta_kind = "up" if profit >= 0 else "down"
 c4.markdown(kpi_card(
-    "Прибыль",
-    fmt_rub(profit),
-    f"маржа {profit_margin:+.1f}% · COGS {cogs_pct}%",
-    kind=profit_kind, delta_kind=profit_delta_kind,
-    tooltip=f"Чистая прибыль = Доход − Себестоимость ({cogs_pct}%) − Расход на рекламу. COGS настраивается в сайдбаре («Себестоимость, %»).",
-), unsafe_allow_html=True)
-
-st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
-
-# Row 2 — второстепенные 4 плитки
-c5, c6, c7, c8 = st.columns(4)
-c5.markdown(kpi_card(
     "Клиенты",
     fmt_num(ck.unique_clients),
     f"новых: {ck.new_clients} · повторных: {ck.repeat_clients}",
@@ -975,23 +1265,34 @@ c5.markdown(kpi_card(
     tooltip="Уникальные клиенты с хотя бы одной оплатой в периоде. Новый = первая оплата клиента помечена «Новый». Повторный = оплата клиента, зарегистрированного раньше.",
     spark_values=spark_new,
 ), unsafe_allow_html=True)
-c6.markdown(kpi_card(
+
+st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
+
+# ─── Row 2 — клиентские плитки ───────────────────────────────
+c5, c6, c7, c8 = st.columns(4)
+c5.markdown(kpi_card(
     "CAC", fmt_rub(cac), "стоимость нового клиента",
     tooltip="Customer Acquisition Cost = Расход на рекламу / число новых клиентов. Чем ниже, тем дешевле привлечение.",
     spark_values=spark_cac,
 ), unsafe_allow_html=True)
-c7.markdown(kpi_card(
+c6.markdown(kpi_card(
     "ARPU", fmt_rub(ck.arpu), "доход на клиента",
     tooltip="Average Revenue Per User = Доход / уникальных клиентов. Сколько в среднем приносит один клиент за период.",
 ), unsafe_allow_html=True)
 ltv_kind = "up" if ltv_cac >= 1 else "down"
 ltv_color = "green" if ltv_cac >= 1 else "red"
-c8.markdown(kpi_card(
+c7.markdown(kpi_card(
     "LTV / CAC",
     f"{ltv_cac:.2f}×",
-    f"средний чек {fmt_rub(ck.avg_check)} · {ck.avg_orders_per_client:.2f} опл/клиент",
+    f"{ck.avg_orders_per_client:.2f} оплат на клиента",
     kind=ltv_color, delta_kind=ltv_kind,
     tooltip="Отношение пожизненной ценности клиента к стоимости его привлечения. 1× — окупается, 3× — прибыльная модель. У хостинга растёт во времени за счёт продлений.",
+), unsafe_allow_html=True)
+c8.markdown(kpi_card(
+    "Средний чек",
+    fmt_rub(ck.avg_check),
+    f"{ck.orders_paid} {plural_ru(ck.orders_paid, 'оплата', 'оплаты', 'оплат')}",
+    tooltip="Средняя сумма одной оплаты в периоде. Полезно сравнивать с MoM динамикой — растёт ли средний чек.",
 ), unsafe_allow_html=True)
 
 
@@ -999,89 +1300,199 @@ c8.markdown(kpi_card(
 #                       Сравнение с прошлым периодом
 # ============================================================
 
-# Сравнение всегда: последний месяц с платежами vs предпоследний
-_paid_orders_all = orders_all[orders_all["is_paid"]]
+# Используем prev_kpi, посчитанный выше (для Hero KPI). compare_range
+# даёт читаемые подписи периодов («Май 2026 · 1–16» vs «Апрель 2026 · 1–16»).
 pc = None
-if not _paid_orders_all.empty:
-    last_month_dt = _paid_orders_all["payment_date"].max().to_period("M").to_timestamp()
-    last_from = last_month_dt
-    last_to = last_month_dt + pd.offsets.MonthEnd(0)
-    prev_from = (last_month_dt - pd.DateOffset(months=1))
-    prev_to = last_month_dt - pd.Timedelta(days=1)
-    cur_kpi = M.compute_kpi(
-        M.filter_orders_by_period(orders_all, last_from, last_to),
-        M.filter_ads_by_period(ads_all, last_from, last_to),
-    )
-    prev_kpi = M.compute_kpi(
-        M.filter_orders_by_period(orders_all, prev_from, prev_to),
-        M.filter_ads_by_period(ads_all, prev_from, prev_to),
-    )
-
+if compare_range is not None and prev_kpi is not None:
     def _dpct(a, b):
         if b is None or pd.isna(b) or b == 0:
             return None
         return (a - b) / abs(b) * 100
 
-    RU_MONTHS_FULL = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-                      "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
     pc = {
-        "current": cur_kpi, "previous": prev_kpi,
-        "current_label": f"{RU_MONTHS_FULL[last_from.month]} {last_from.year}",
-        "prev_label": f"{RU_MONTHS_FULL[prev_from.month]} {prev_from.year}",
+        "current": ck, "previous": prev_kpi,
+        "current_label": _cur_label,
+        "prev_label": _prev_label,
         "deltas": {
-            "spend": _dpct(cur_kpi.spend, prev_kpi.spend),
-            "revenue": _dpct(cur_kpi.revenue, prev_kpi.revenue),
-            "new_clients": _dpct(cur_kpi.new_clients, prev_kpi.new_clients),
-            "arpu": _dpct(cur_kpi.arpu, prev_kpi.arpu),
-            "avg_check": _dpct(cur_kpi.avg_check, prev_kpi.avg_check),
+            "spend": _dpct(ck.spend, prev_kpi.spend),
+            "revenue": _dpct(ck.revenue, prev_kpi.revenue),
+            "new_clients": _dpct(ck.new_clients, prev_kpi.new_clients),
+            "arpu": _dpct(ck.arpu, prev_kpi.arpu),
+            "avg_check": _dpct(ck.avg_check, prev_kpi.avg_check),
         },
     }
 
 if pc:
     st.markdown(
-        f'<div class="section-title">{pc["current_label"]} vs {pc["prev_label"]}</div>',
+        f'<div class="section-title">Сравнение: <span style="color:{PALETTE["text"]}; '
+        f'text-transform:none; letter-spacing:0;">{pc["current_label"]}</span> '
+        f'<span style="color:{PALETTE["muted"]}; font-weight:400;">vs</span> '
+        f'<span style="color:{PALETTE["muted"]}; text-transform:none; letter-spacing:0;">{pc["prev_label"]}</span></div>',
         unsafe_allow_html=True,
     )
 
-    def _delta_html(label, current_fmt, delta_val, *, invert=False):
+    def _delta_html(label, current_fmt, prev_fmt, delta_val, *, invert=False):
         if delta_val is None or pd.isna(delta_val):
-            return kpi_card(label, current_fmt, "—", delta_kind="neutral")
+            return kpi_card(label, current_fmt, f"было: {prev_fmt}", delta_kind="neutral")
         arrow = "↑" if delta_val >= 0 else "↓"
         # invert=True если для метрики «расход» рост — это плохо
         positive = (delta_val >= 0) if not invert else (delta_val <= 0)
         delta_kind = "up" if positive else "down"
         return kpi_card(
             label, current_fmt,
-            f"{arrow} {abs(delta_val):.1f}% vs прошлый",
+            f"{arrow} {abs(delta_val):.1f}% · было: {prev_fmt}",
             delta_kind=delta_kind,
         )
 
     cc1, cc2, cc3, cc4, cc5 = st.columns(5)
     cc1.markdown(_delta_html(
         "Расход",
-        fmt_rub(pc["current"].spend),
+        fmt_rub(pc["current"].spend), fmt_rub(pc["previous"].spend),
         pc["deltas"]["spend"], invert=True,
     ), unsafe_allow_html=True)
     cc2.markdown(_delta_html(
         "Доход",
-        fmt_rub(pc["current"].revenue),
+        fmt_rub(pc["current"].revenue), fmt_rub(pc["previous"].revenue),
         pc["deltas"]["revenue"],
     ), unsafe_allow_html=True)
     cc3.markdown(_delta_html(
         "Новых клиентов",
-        fmt_num(pc["current"].new_clients),
+        fmt_num(pc["current"].new_clients), fmt_num(pc["previous"].new_clients),
         pc["deltas"]["new_clients"],
     ), unsafe_allow_html=True)
     cc4.markdown(_delta_html(
         "ARPU",
-        fmt_rub(pc["current"].arpu),
+        fmt_rub(pc["current"].arpu), fmt_rub(pc["previous"].arpu),
         pc["deltas"]["arpu"],
     ), unsafe_allow_html=True)
     cc5.markdown(_delta_html(
         "Средний чек",
-        fmt_rub(pc["current"].avg_check),
+        fmt_rub(pc["current"].avg_check), fmt_rub(pc["previous"].avg_check),
         pc["deltas"]["avg_check"],
     ), unsafe_allow_html=True)
+
+
+# ============================================================
+#                       What-if симулятор бюджета
+# ============================================================
+
+# Берём «рабочие» CAC и ARPU per new — последние 3 месяца с данными.
+# Базовая точка = средние за эти 3 месяца, слайдер моделирует ОТНОСИТЕЛЬНО неё.
+# Это даёт честный прогноз при сохранении текущей эффективности Директа,
+# а не средне-исторический CAC (он перекошен старым аккаунтом).
+_sim_base_rows = _ms[_ms["cac"].notna() & (_ms["cac"] > 0) & (_ms["new_clients"] > 0)].tail(3)
+if not _sim_base_rows.empty:
+    _sim_total_spend = float(_sim_base_rows["spend"].sum())
+    _sim_total_new = float(_sim_base_rows["new_clients"].sum())
+    _sim_total_rev_from_new = float(_sim_base_rows.get("revenue_from_new", _sim_base_rows["revenue"]).sum())
+    _sim_n_months = len(_sim_base_rows)
+    _sim_base = {
+        "spend_per_month": _sim_total_spend / _sim_n_months,
+        "new_per_month": _sim_total_new / _sim_n_months,
+        "cac": _sim_total_spend / max(_sim_total_new, 1),
+        "revenue_per_new": _sim_total_rev_from_new / max(_sim_total_new, 1),
+        "label": (
+            f"{fmt_month_ru(_sim_base_rows.iloc[0]['month'], 'low_year')}"
+            f" – {fmt_month_ru(_sim_base_rows.iloc[-1]['month'], 'low_year')}"
+        ),
+        "cogs_factor": cogs_factor,
+    }
+
+    st.markdown('<div class="section-title">Симулятор бюджета · что если?</div>', unsafe_allow_html=True)
+
+    @st.fragment
+    def _render_whatif_simulator(base):
+        """Изолированный фрагмент — слайдеры внутри пересчитывают только этот блок,
+        а не всю страницу. Streamlit ≥ 1.32."""
+        sim_col_l, sim_col_r = st.columns([1.1, 1.4])
+        with sim_col_l:
+            st.markdown(
+                f"<div style='color:{PALETTE['muted']}; font-size:0.82rem; margin-bottom:0.4rem;'>"
+                f"База — средний месяц за <b>{base['label']}</b>:<br>"
+                f"бюджет <b>{fmt_rub(base['spend_per_month'])}</b> · "
+                f"новых клиентов <b>{fmt_num(base['new_per_month'])}</b> · "
+                f"CAC <b>{fmt_rub(base['cac'])}</b> · "
+                f"доход с нового в M+0 <b>{fmt_rub(base['revenue_per_new'])}</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            sim_delta = st.slider(
+                "Изменить бюджет на месяц",
+                min_value=-80, max_value=300, value=0, step=10,
+                format="%+d%%",
+                key="whatif_budget_pct",
+                help=(
+                    "Прогноз при сохранении текущего CAC и ARPU. "
+                    "Реальная эффективность с ростом бюджета обычно немного снижается "
+                    "(закон убывающей отдачи) — закладывайте запас 20–30%."
+                ),
+            )
+            sim_ltv_mult = st.slider(
+                "Горизонт LTV (мес)",
+                min_value=1, max_value=12, value=3, step=1,
+                key="whatif_ltv_horizon",
+                help=(
+                    "Сколько месяцев считаем доход с нового клиента. "
+                    "M=1 — только первая оплата (консервативно, обычно реклама в минусе). "
+                    "M=6 — клиент платит полгода (близко к реальному LTV для хостинга)."
+                ),
+            )
+
+        new_spend = base["spend_per_month"] * (1 + sim_delta / 100)
+        new_clients_proj = new_spend / max(base["cac"], 1)
+        extra_clients = new_clients_proj - base["new_per_month"]
+        revenue_per_client_horizon = base["revenue_per_new"] * sim_ltv_mult
+        proj_revenue = new_clients_proj * revenue_per_client_horizon
+        proj_cogs = proj_revenue * base["cogs_factor"]
+        proj_profit = proj_revenue - proj_cogs - new_spend
+        proj_romi = ((proj_revenue - new_spend) / new_spend * 100) if new_spend else 0
+
+        with sim_col_r:
+            budget_kind = "primary" if sim_delta != 0 else ""
+            budget_delta = f"{sim_delta:+d}% к базе" if sim_delta else "= база"
+            clients_delta = (
+                f"+{int(round(extra_clients))} к базе" if extra_clients > 0.5
+                else (f"{int(round(extra_clients))} к базе" if extra_clients < -0.5 else "= база")
+            )
+            romi_kind = "green" if proj_romi >= 0 else "red"
+
+            sc1, sc2 = st.columns(2)
+            sc1.markdown(kpi_card(
+                "Бюджет на месяц",
+                fmt_rub(new_spend),
+                budget_delta,
+                kind=budget_kind,
+            ), unsafe_allow_html=True)
+            sc2.markdown(kpi_card(
+                "Прогноз новых клиентов",
+                fmt_num(new_clients_proj),
+                clients_delta,
+                kind="primary",
+            ), unsafe_allow_html=True)
+            sc3, sc4 = st.columns(2)
+            sc3.markdown(kpi_card(
+                f"Доход за M+{sim_ltv_mult}",
+                fmt_rub(proj_revenue),
+                f"{fmt_rub(revenue_per_client_horizon)} × {fmt_num(new_clients_proj)} клиентов",
+                kind="green",
+            ), unsafe_allow_html=True)
+            sc4.markdown(kpi_card(
+                "Прогнозный ROMI",
+                f"{proj_romi:+.1f}%",
+                f"прибыль {fmt_rub(proj_profit)}",
+                kind=romi_kind,
+                delta_kind=("up" if proj_romi >= 0 else "down"),
+            ), unsafe_allow_html=True)
+
+        st.caption(
+            "Грубая модель: при увеличении бюджета пропорционально вырастают клиенты "
+            "по текущему CAC. В реальности с ростом бюджета CAC обычно растёт (CPC выше, "
+            "хуже релевантность) — закладывайте запас 20–30%. "
+            "Горизонт LTV M=1 = только первая оплата (хостинг обычно не окупается за месяц, "
+            "это нормально), M=6 ≈ реальный LTV годовой подписки."
+        )
+
+    _render_whatif_simulator(_sim_base)
 
 
 # ============================================================
@@ -1236,7 +1647,7 @@ with col_right:
 #                       Churn / здоровье клиентской базы
 # ============================================================
 
-ch_sum = M.churn_summary(orders)
+ch_sum = ch_sum_early  # уже посчитан выше для инсайтов
 if ch_sum:
     st.markdown('<div class="section-title">Здоровье клиентской базы</div>', unsafe_allow_html=True)
 
