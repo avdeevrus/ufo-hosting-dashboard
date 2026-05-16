@@ -34,12 +34,17 @@ dashboard_page = st.Page(
     "_dashboard_main.py",
     title="Дашборд окупаемости",
     icon="📊",
+    url_path="dashboard",
     default=True,
 )
+# url_path в латинице — критично! Без него Streamlit формирует URL из title
+# («/Качество рекламы»), кириллица URL-encoded ломает внутренние эндпоинты
+# Streamlit Cloud / HF Spaces (_stcore/host-config, _stcore/health → 404).
 quality_page = st.Page(
     "_quality_page.py",
     title="Качество рекламы",
     icon="🎯",
+    url_path="quality",
 )
 
 nav = st.navigation([dashboard_page, quality_page])
