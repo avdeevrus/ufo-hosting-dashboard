@@ -46,17 +46,41 @@ except Exception as e:
 #                       Защита паролем
 # ============================================================
 
+import hashlib as _hashlib
+
+
+def _password_token(pwd: str) -> str:
+    """Хэш для URL-токена. SHA-256 + соль, первые 24 символа."""
+    salted = ("ufo-hosting-dashboard-2026:" + pwd).encode("utf-8")
+    return _hashlib.sha256(salted).hexdigest()[:24]
+
+
 def _check_password() -> bool:
-    """Простой password-gate. Если в Space Secrets нет APP_PASSWORD —
-    приложение открыто всем (по умолчанию). Если есть — требуется ввод."""
+    """Password-gate с persistence через URL-token.
+
+    Если в Space Secrets нет APP_PASSWORD — приложение открыто всем (default).
+    Если есть — при первом входе пользователь вводит пароль; после успешного
+    ввода токен дописывается в URL (?t=<hash>), чтобы при следующем заходе
+    на ту же ссылку login пропускался автоматически.
+    Кнопка «Выйти» в сайдбаре сбрасывает session и убирает токен из URL.
+    """
     expected = os.environ.get("APP_PASSWORD")
     if not expected:
-        return True  # пароль не настроен — открыт для всех
+        return True
 
+    expected_token = _password_token(expected)
+
+    # Уже залогинены в этой сессии
     if st.session_state.get("auth_ok"):
         return True
 
-    # Закрываем sidebar на экране логина
+    # Проверка persistent токена в URL
+    url_token = st.query_params.get("t")
+    if url_token == expected_token:
+        st.session_state["auth_ok"] = True
+        return True
+
+    # Login-экран
     st.markdown(
         """
         <style>
@@ -76,9 +100,13 @@ def _check_password() -> bool:
         unsafe_allow_html=True,
     )
     pwd = st.text_input("Пароль доступа", type="password", key="login_pwd")
+    remember = st.checkbox("Запомнить меня на этом устройстве", value=True, key="login_remember")
     if pwd:
         if pwd == expected:
             st.session_state["auth_ok"] = True
+            if remember:
+                # Persistent токен в URL — при возврате по ссылке login пропускается
+                st.query_params["t"] = expected_token
             st.rerun()
         else:
             st.error("Неверный пароль", icon="🔒")
@@ -773,6 +801,15 @@ with placeholder_filters:
         help="Доля себестоимости от выручки. Для хостинга обычно 25–35% (датацентры, лицензии). Используется для расчёта чистой прибыли.",
     )
     cogs_factor = cogs_pct / 100.0
+
+    # Кнопка «Выйти» — только если включена парольная защита
+    if os.environ.get("APP_PASSWORD"):
+        st.divider()
+        if st.button("🚪 Выйти", use_container_width=True, key="logout_btn",
+                     help="Сбросить вход на этом устройстве. Чтобы зайти заново — потребуется пароль."):
+            st.session_state.pop("auth_ok", None)
+            st.query_params.clear()
+            st.rerun()
 
 
 orders = M.filter_orders_by_period(orders_all, d_from, d_to)
