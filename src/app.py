@@ -4,9 +4,10 @@ UFO Hosting — Entrypoint мультистраничного приложени
 Запуск локально:    streamlit run src/app.py
 Деплой в облако:    Streamlit Community Cloud (привязать GitHub-репо)
 
-Структура:
-  • _dashboard_main.py        — главная страница (для руководителя)
-  • pages/1_🎯_Качество_рекламы.py  — детальная аналитика Я.Директа
+Структура (БЕЗ pages/ директории — иначе Streamlit Cloud конфликтует
+с st.navigation и показывает дубли + название «app»):
+  • _dashboard_main.py — главная страница (для руководителя)
+  • _quality_page.py   — детальная аналитика Я.Директа
 """
 
 from __future__ import annotations
@@ -26,8 +27,9 @@ st.set_page_config(
 # Sys path для импортов из соседних модулей
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Регистрируем страницы через st.navigation, чтобы у главной было
-# красивое имя «📊 Дашборд окупаемости» (по умолчанию Streamlit взял бы «App»).
+# Регистрируем страницы через st.navigation. ВАЖНО: pages/ директории
+# быть НЕ ДОЛЖНО — иначе Streamlit Cloud параллельно с явной навигацией
+# вытаскивает её автоматически и в сайдбаре появляется «app» + дубли.
 dashboard_page = st.Page(
     "_dashboard_main.py",
     title="Дашборд окупаемости",
@@ -35,7 +37,7 @@ dashboard_page = st.Page(
     default=True,
 )
 quality_page = st.Page(
-    "pages/1_🎯_Качество_рекламы.py",
+    "_quality_page.py",
     title="Качество рекламы",
     icon="🎯",
 )
