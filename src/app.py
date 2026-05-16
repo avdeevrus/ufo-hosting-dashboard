@@ -584,7 +584,7 @@ def _compute_preset_range(name: str, data_max: pd.Timestamp, data_min: pd.Timest
 
 
 # Hero с интегрированным выбором периода (как у Я.Директ)
-hcol_left, hcol_right = st.columns([3.2, 1.4])
+hcol_left, hcol_right = st.columns([2.6, 1.6])
 with hcol_left:
     st.markdown(
         """
@@ -597,11 +597,11 @@ with hcol_left:
     )
 with hcol_right:
     preset = st.selectbox(
-        "Период",
+        "📅 Период анализа",
         PERIOD_PRESETS,
         index=PERIOD_PRESETS.index("За всё время"),
         key="period_preset",
-        label_visibility="collapsed",
+        help="Готовые пресеты как у Яндекс.Директа. «Произвольный» откроет ручной выбор дат.",
     )
 
 if preset == "Произвольный":
@@ -625,7 +625,7 @@ else:
 
 # Подзаголовок с актуальным диапазоном дат
 st.markdown(
-    f'<div class="ufo-hero-range">📅 {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}</div>',
+    f'<div class="ufo-hero-range">Период: <b>{d_from:%d.%m.%Y} — {d_to:%d.%m.%Y}</b></div>',
     unsafe_allow_html=True,
 )
 
