@@ -375,11 +375,27 @@ st.markdown(
     }}
     /* Popover-меню (живёт в портале) — поверх всего, включая header */
     [data-testid="stPopoverBody"] {{ z-index: 999992 !important; }}
-    /* На мобильных триггер чуть уже и ближе к краю */
-    @media (max-width: 720px) {{
-        .st-key-period_picker {{
-            width: 180px !important; right: 0.6rem !important; top: 3rem !important;
-        }}
+
+    /* Лента «Покрытие данными» — flex, все ячейки равной ширины, без одиноких */
+    .coverage-row {{
+        display: flex; flex-wrap: wrap; gap: 0.35rem;
+    }}
+    .coverage-cell {{
+        flex: 1 1 0; min-width: 70px;
+        border-radius: 8px; padding: 0.5rem 0.3rem; text-align: center;
+    }}
+    .coverage-cell-icon {{ font-size: 1rem; line-height: 1; margin-bottom: 0.25rem; }}
+    .coverage-cell-label {{
+        font-size: 0.7rem; color: {PALETTE['text']}; font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }}
+    @media (max-width: 640px) {{
+        .coverage-row {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.3rem; }}
+        .coverage-cell {{ padding: 0.45rem 0.25rem; min-width: 0; }}
+        .coverage-cell-label {{ font-size: 0.65rem; }}
+    }}
+    @media (max-width: 340px) {{
+        .coverage-row {{ grid-template-columns: repeat(2, 1fr); }}
     }}
 
     /* Авто-инсайты */
@@ -455,28 +471,127 @@ st.markdown(
         border-top: 1px solid {PALETTE['border']};
     }}
 
-    /* Mobile responsive */
-    @media (max-width: 900px) {{
-        [data-testid="stHorizontalBlock"] {{
-            flex-wrap: wrap !important;
+    /* ─── Адаптивность: tablet / phone ─────────────────────────── */
+    /* Tablet (< 1024px): чуть компактнее */
+    @media (max-width: 1024px) {{
+        .kpi-hero-value {{ font-size: 2.3rem !important; }}
+        .ufo-hero-text h1 {{ font-size: 1.5rem !important; }}
+        .st-key-period_picker {{
+            width: 200px !important; right: 0.8rem !important; top: 3rem !important;
         }}
+    }}
+
+    /* Large phone / portrait tablet (< 900px): KPI в 2 столбца */
+    @media (max-width: 900px) {{
+        [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
         [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
             flex: 1 1 calc(50% - 0.4rem) !important;
             min-width: calc(50% - 0.4rem) !important;
         }}
-        .ufo-hero-text h1 {{ font-size: 1.4rem; }}
-        .kpi-card .kpi-value {{ font-size: 1.35rem; }}
+        .ufo-hero-text h1 {{ font-size: 1.35rem !important; }}
+        .ufo-hero-text .ufo-sub {{ font-size: 0.78rem; }}
+        .kpi-card {{ padding: 0.75rem 0.85rem; }}
+        .kpi-card .kpi-value {{ font-size: 1.35rem !important; }}
+        .kpi-hero {{ padding: 1.1rem 1.2rem; gap: 0.8rem; }}
+        .kpi-hero-value {{ font-size: 2rem !important; }}
+        .kpi-hero-breakdown {{
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 0.4rem !important;
+        }}
+        .kpi-hero-bd-item {{ padding: 0.45rem 0.55rem; }}
+        .kpi-hero-bd-value {{ font-size: 0.85rem !important; }}
+        /* Авто-инсайты — на планшете 2 в ряд автоматически (min-width 240px) */
     }}
-    @media (max-width: 560px) {{
+
+    /* Phone (< 640px): полностью одна колонка, триггер периода — в потоке */
+    @media (max-width: 640px) {{
+        .main .block-container,
+        section.main > div > div > div.block-container,
+        [data-testid="stMainBlockContainer"] {{
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            padding-top: 0.8rem !important;
+        }}
+
+        /* Плавающий триггер периода СНИМАЕМ с position:fixed —
+           он встаёт под Hero в нормальном потоке и не перекрывает заголовок. */
+        .st-key-period_picker {{
+            position: static !important;
+            top: auto !important; right: auto !important;
+            width: 100% !important;
+            margin: 0.2rem 0 0.8rem !important;
+            z-index: auto !important;
+        }}
+        .st-key-period_picker [data-testid="stPopoverButton"] {{
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
+            min-height: 44px !important;
+        }}
+        /* Popover-меню — на всю ширину viewport минус малый отступ */
+        [data-testid="stPopoverBody"] {{
+            min-width: calc(100vw - 1.6rem) !important;
+            max-width: calc(100vw - 1.6rem) !important;
+        }}
+
+        /* Hero KPI — уменьшаем главную цифру */
+        .kpi-hero {{ padding: 1rem 1.1rem; }}
+        .kpi-hero-label {{ font-size: 0.7rem; }}
+        .kpi-hero-value {{ font-size: 1.7rem !important; letter-spacing: -0.5px; }}
+        .kpi-hero-sub {{ font-size: 0.8rem; }}
+        .kpi-hero-breakdown {{
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 0.35rem !important;
+        }}
+        .kpi-hero-bd-label {{ font-size: 0.62rem !important; }}
+        .kpi-hero-bd-value {{ font-size: 0.78rem !important; }}
+
+        /* KPI карточки — оставляем 2 в ряд для компактности */
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+            flex: 1 1 calc(50% - 0.4rem) !important;
+            min-width: calc(50% - 0.4rem) !important;
+        }}
+
+        /* Section title — больше воздуха */
+        .section-title {{ margin: 1.3rem 0 0.5rem; font-size: 0.74rem; }}
+
+        /* Авто-инсайты — 1 столбец, более компактные */
+        .insight-pill {{
+            flex: 1 1 100% !important; min-width: 0 !important;
+            font-size: 0.82rem; padding: 0.65rem 0.85rem;
+        }}
+
+        /* Sparkline в KPI плитке — уменьшаем чтобы не занимал место */
+        .kpi-card svg {{ width: 100% !important; height: 22px !important; }}
+
+        /* Лента покрытия данных — текст в ячейках компактнее */
+        .ufo-hero-range {{ font-size: 0.72rem; padding-bottom: 0.7rem; }}
+    }}
+
+    /* Small phone (< 420px): 1 столбец для ВСЕГО, минимум отступов */
+    @media (max-width: 420px) {{
         [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
             flex: 1 1 100% !important;
             min-width: 100% !important;
         }}
+        .kpi-hero-value {{ font-size: 1.55rem !important; }}
+        .kpi-hero-breakdown {{
+            grid-template-columns: 1fr 1fr !important;
+        }}
+        .ufo-hero-text h1 {{ font-size: 1.25rem !important; }}
         .main .block-container,
-        section.main > div > div > div.block-container,
         [data-testid="stMainBlockContainer"] {{
-            padding-left: 0.9rem !important;
-            padding-right: 0.9rem !important;
+            padding-left: 0.7rem !important;
+            padding-right: 0.7rem !important;
+        }}
+    }}
+
+    /* Очень широкие мониторы (>= 1600px): ограничиваем макс. ширину
+       чтобы линии текста не растягивались бесконечно */
+    @media (min-width: 1800px) {{
+        .main .block-container,
+        [data-testid="stMainBlockContainer"] {{
+            max-width: 1700px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
         }}
     }}
 
@@ -1340,14 +1455,14 @@ if not coverage.empty:
         else:
             bg = "#f1f5f9"; border = "#cbd5e1"; icon = "·"; tip = "Нет данных"
         cells_html.append(
-            f'<div title="{tip}" style="flex:1 1 0; min-width:68px; background:{bg}; '
-            f'border:1px solid {border}; border-radius:8px; padding:0.5rem 0.3rem; text-align:center;">'
-            f'<div style="font-size:1rem; line-height:1; margin-bottom:0.25rem;">{icon}</div>'
-            f'<div style="font-size:0.7rem; color:{PALETTE["text"]}; font-weight:600; white-space:nowrap;">{m_label}</div>'
+            f'<div title="{tip}" class="coverage-cell" style="background:{bg}; '
+            f'border:1px solid {border};">'
+            f'<div class="coverage-cell-icon">{icon}</div>'
+            f'<div class="coverage-cell-label">{m_label}</div>'
             f'</div>'
         )
     st.markdown(
-        f'<div style="display:flex; gap:0.3rem; flex-wrap:wrap;">{"".join(cells_html)}</div>',
+        f'<div class="coverage-row">{"".join(cells_html)}</div>',
         unsafe_allow_html=True,
     )
 
