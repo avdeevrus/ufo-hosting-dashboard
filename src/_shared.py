@@ -406,6 +406,55 @@ def apply_base_styles() -> None:
             border: 5px solid transparent; border-top-color: {PALETTE['text']};
             z-index: 1000; pointer-events: none;
         }}
+
+        /* ─── Адаптивность для всех страниц ───────────────── */
+        @media (max-width: 1024px) {{
+            .ufo-hero-text h1 {{ font-size: 1.5rem !important; }}
+        }}
+        @media (max-width: 900px) {{
+            [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
+            [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+                flex: 1 1 calc(50% - 0.4rem) !important;
+                min-width: calc(50% - 0.4rem) !important;
+            }}
+            .kpi-card {{ padding: 0.75rem 0.85rem; }}
+            .kpi-card .kpi-value {{ font-size: 1.35rem !important; }}
+        }}
+        @media (max-width: 640px) {{
+            .main .block-container,
+            [data-testid="stMainBlockContainer"] {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }}
+            [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }}
+            /* Streamlit dataframe — горизонтальный скролл вместо обрезания */
+            [data-testid="stDataFrame"] {{ overflow-x: auto !important; }}
+            /* Tabs scroll по горизонтали на мобильном */
+            [data-testid="stTabs"] [role="tablist"] {{
+                overflow-x: auto !important; flex-wrap: nowrap !important;
+            }}
+            [data-testid="stTabs"] [role="tab"] {{ flex-shrink: 0 !important; }}
+            /* Заголовки секций — больше воздуха */
+            .section-title {{ font-size: 0.74rem; }}
+        }}
+        @media (max-width: 420px) {{
+            .main .block-container,
+            [data-testid="stMainBlockContainer"] {{
+                padding-left: 0.7rem !important;
+                padding-right: 0.7rem !important;
+            }}
+        }}
+        @media (min-width: 1800px) {{
+            .main .block-container,
+            [data-testid="stMainBlockContainer"] {{
+                max-width: 1700px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+            }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
