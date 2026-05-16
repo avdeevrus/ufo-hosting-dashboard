@@ -753,6 +753,51 @@ def _load_api_cache_df():
         return pd.DataFrame()
 
 
+# ─── Кэш расширенной аналитики (campaign_quality, keywords, ads) ───
+QUALITY_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "api_cache"
+QUALITY_CACHE_FILES = {
+    "campaign_quality": "yd_campaign_quality.json",
+    "keywords": "yd_keywords.json",
+    "ads_creatives": "yd_ads_creatives.json",
+}
+
+
+def _save_quality_cache(kind: str, df: pd.DataFrame, period: tuple) -> None:
+    """Сохраняем DataFrame и метаданные периода в JSON на диск."""
+    QUALITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    fname = QUALITY_CACHE_FILES[kind]
+    path = QUALITY_CACHE_DIR / fname
+    payload = {
+        "period_from": str(period[0]),
+        "period_to": str(period[1]),
+        "fetched_at": pd.Timestamp.now().isoformat(),
+        "rows": df.to_dict(orient="records") if not df.empty else [],
+    }
+    import json
+    path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_quality_cache(kind: str) -> tuple[pd.DataFrame, dict]:
+    """Возвращает (DataFrame, meta-info). Если файла нет — пустые объекты."""
+    path = QUALITY_CACHE_DIR / QUALITY_CACHE_FILES[kind]
+    if not path.exists():
+        return pd.DataFrame(), {}
+    try:
+        import json
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload.get("rows", [])
+        df = pd.DataFrame(rows)
+        meta = {
+            "period_from": payload.get("period_from"),
+            "period_to": payload.get("period_to"),
+            "fetched_at": payload.get("fetched_at"),
+        }
+        return df, meta
+    except Exception:
+        return pd.DataFrame(), {}
+
+
 # ============================================================
 #                       Sidebar
 # ============================================================
@@ -857,6 +902,67 @@ with st.sidebar:
             if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
                 n = len(st.session_state["yd_api_ads"])
                 st.caption(f"В сессии: {n} строк (кэш на 24 часа)")
+
+        # Расширенная аналитика качества (кампании / ключевики / объявления)
+        with st.expander("📊 Аналитика качества рекламы", expanded=False):
+            st.caption(
+                "Подтягивает CTR, CPC, конверсии-цели Метрики, bounce — "
+                "по кампаниям, ключевым словам и объявлениям. "
+                "Кэшируется на диск, не запрашивается повторно."
+            )
+            q_from = st.date_input(
+                "С даты",
+                value=pd.Timestamp.today() - pd.Timedelta(days=90),
+                key="yd_quality_from",
+                format="DD.MM.YYYY",
+            )
+            q_to = st.date_input(
+                "По дату",
+                value=pd.Timestamp.today(),
+                key="yd_quality_to",
+                format="DD.MM.YYYY",
+            )
+
+            if st.button("Подтянуть качество",
+                         use_container_width=True, type="primary",
+                         key="yd_quality_sync"):
+                try:
+                    from yandex_direct import (
+                        DirectCredentials,
+                        fetch_campaign_quality, fetch_keyword_report, fetch_ad_report,
+                    )
+                    creds_q = DirectCredentials(
+                        token=_yd_creds_global.token,
+                        client_login=_yd_creds_global.client_login,
+                    )
+                    period_str = (str(q_from), str(q_to))
+
+                    with st.spinner("1/3 кампании…"):
+                        cq = fetch_campaign_quality(creds_q, *period_str)
+                        _save_quality_cache("campaign_quality", cq, period_str)
+                    with st.spinner("2/3 ключевики…"):
+                        kw = fetch_keyword_report(creds_q, *period_str)
+                        _save_quality_cache("keywords", kw, period_str)
+                    with st.spinner("3/3 объявления…"):
+                        ad = fetch_ad_report(creds_q, *period_str)
+                        _save_quality_cache("ads_creatives", ad, period_str)
+
+                    _load_quality_cache.clear()
+                    st.success(
+                        f"Кампании: {len(cq)} · Ключевики: {len(kw)} · "
+                        f"Объявления: {len(ad)}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
+
+            # Статус кэша
+            _, _cq_meta = _load_quality_cache("campaign_quality")
+            if _cq_meta:
+                st.caption(
+                    f"📦 Кэш за {_cq_meta.get('period_from', '?')} – "
+                    f"{_cq_meta.get('period_to', '?')}"
+                )
 
     st.divider()
 
@@ -1738,6 +1844,239 @@ if not ms.empty:
         ),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================
+#                       Качество рекламы (Я.Директ API)
+# ============================================================
+
+_q_camp, _q_camp_meta = _load_quality_cache("campaign_quality")
+_q_kw, _q_kw_meta = _load_quality_cache("keywords")
+_q_ad, _q_ad_meta = _load_quality_cache("ads_creatives")
+
+if not _q_camp.empty or not _q_kw.empty or not _q_ad.empty:
+    st.markdown(
+        '<div class="section-title">Качество рекламы · Яндекс.Директ</div>',
+        unsafe_allow_html=True,
+    )
+    _q_period_lbl = (
+        f"{_q_camp_meta.get('period_from', '?')} – {_q_camp_meta.get('period_to', '?')}"
+        if _q_camp_meta else "—"
+    )
+    st.caption(
+        f"Данные API за период **{_q_period_lbl}**. "
+        f"Обновляется кнопкой «Подтянуть качество» в сайдбаре."
+    )
+
+    quality_tabs = st.tabs(["Кампании", "Ключевые слова", "Объявления"])
+
+    # ─── Tab 1: КАМПАНИИ ─────────────────────────────────────
+    with quality_tabs[0]:
+        if _q_camp.empty:
+            st.info("Нет данных. Нажмите «Подтянуть качество» в сайдбаре.")
+        else:
+            cq = _q_camp.copy()
+            # Числовые поля приводим к нужным типам
+            for col in ("ctr", "conversion_rate", "bounce_rate", "avg_pageviews",
+                        "conversions", "cost_per_conversion", "avg_cpc",
+                        "spend_rub", "impressions", "clicks"):
+                if col in cq.columns:
+                    cq[col] = pd.to_numeric(cq[col], errors="coerce")
+
+            # Сводные плитки наверху
+            total_spend = cq["spend_rub"].sum() if "spend_rub" in cq else 0
+            total_clicks = cq["clicks"].sum() if "clicks" in cq else 0
+            total_impr = cq["impressions"].sum() if "impressions" in cq else 0
+            total_conv = cq["conversions"].sum() if "conversions" in cq else 0
+            avg_ctr = (total_clicks / total_impr * 100) if total_impr else 0
+            avg_cpc_total = (total_spend / total_clicks) if total_clicks else 0
+            avg_cpl = (total_spend / total_conv) if total_conv else 0
+
+            qc1, qc2, qc3, qc4 = st.columns(4)
+            qc1.markdown(kpi_card(
+                "Расход", fmt_rub(total_spend),
+                f"{int(total_impr):,} показов".replace(",", " "),
+                kind="red",
+            ), unsafe_allow_html=True)
+            qc2.markdown(kpi_card(
+                "Кликов", fmt_num(total_clicks),
+                f"CTR {avg_ctr:.2f}%",
+                kind="primary",
+                tooltip="Кликабельность объявлений = клики / показы. Чем выше, тем релевантнее. Норма для поиска ~1-3%, РСЯ ~0.3-1%.",
+            ), unsafe_allow_html=True)
+            qc3.markdown(kpi_card(
+                "Средний CPC", fmt_rub(avg_cpc_total),
+                "стоимость клика",
+                tooltip="Cost Per Click = расход / клики. Чем ниже — тем дешевле трафик.",
+            ), unsafe_allow_html=True)
+            conv_kind = "green" if total_conv > 0 else "red"
+            qc4.markdown(kpi_card(
+                "Конверсии (цели)", fmt_num(total_conv),
+                f"CPL {fmt_rub(avg_cpl)}" if total_conv else "цели Метрики не зафиксированы",
+                kind=conv_kind,
+                tooltip="Достижения целей в Я.Метрике (заявка / оплата / другая цель). CPL = расход / конверсии. Если 0 — проверьте, что счётчик Метрики привязан к кампании и цели настроены.",
+            ), unsafe_allow_html=True)
+
+            # Сама таблица
+            st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+            cq_show = cq.sort_values("spend_rub", ascending=False).copy()
+            # Кампании с CR > 0 — выделяем зелёным значком
+            display_cols = {
+                "campaign": "Кампания",
+                "campaign_type": "Тип",
+                "impressions": "Показы",
+                "clicks": "Клики",
+                "ctr": "CTR, %",
+                "spend_rub": "Расход, ₽",
+                "avg_cpc": "CPC, ₽",
+                "conversions": "Конв.",
+                "conversion_rate": "CR, %",
+                "cost_per_conversion": "CPL, ₽",
+                "bounce_rate": "Отказы, %",
+                "avg_pageviews": "Глубина",
+            }
+            available = [c for c in display_cols if c in cq_show.columns]
+            st.dataframe(
+                cq_show[available].rename(columns=display_cols),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                    "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                    "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                    "CR, %": st.column_config.NumberColumn(format="%.2f"),
+                    "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                    "CPL, ₽": st.column_config.NumberColumn(format="%.0f"),
+                    "Отказы, %": st.column_config.NumberColumn(format="%.1f"),
+                    "Глубина": st.column_config.NumberColumn(format="%.2f"),
+                    "Показы": st.column_config.NumberColumn(format="%d"),
+                    "Клики": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+
+            # График сравнения кампаний — CTR vs CPC scatter (если есть данные)
+            if "ctr" in cq.columns and "avg_cpc" in cq.columns and len(cq) >= 2:
+                cq_chart = cq[(cq["clicks"] > 0) & cq["ctr"].notna() & cq["avg_cpc"].notna()].copy()
+                if len(cq_chart) >= 2:
+                    fig_qc = px.scatter(
+                        cq_chart,
+                        x="avg_cpc", y="ctr",
+                        size="spend_rub",
+                        color="conversions" if cq_chart["conversions"].notna().any() else None,
+                        hover_name="campaign",
+                        hover_data={"spend_rub": ":.0f", "clicks": True, "conversions": True},
+                        color_continuous_scale="Greens",
+                        labels={"avg_cpc": "CPC, ₽", "ctr": "CTR, %",
+                                "conversions": "Конверсии", "spend_rub": "Расход, ₽"},
+                    )
+                    fig_qc.update_layout(
+                        **{**PLOTLY_LAYOUT, "height": 380,
+                           "title": "CTR × CPC: размер точки = расход, цвет = конверсии"},
+                    )
+                    st.plotly_chart(fig_qc, use_container_width=True)
+
+    # ─── Tab 2: КЛЮЧЕВЫЕ СЛОВА ───────────────────────────────
+    with quality_tabs[1]:
+        if _q_kw.empty:
+            st.info("Нет данных. Нажмите «Подтянуть качество» в сайдбаре.")
+        else:
+            kw = _q_kw.copy()
+            for col in ("ctr", "conversion_rate", "conversions", "cost_per_conversion",
+                        "avg_cpc", "spend_rub", "impressions", "clicks"):
+                if col in kw.columns:
+                    kw[col] = pd.to_numeric(kw[col], errors="coerce")
+
+            kw_view = st.radio(
+                "Что показать",
+                ["Топ-30 по расходу", "Топ-30 с конверсиями",
+                 "Топ-30 убыточных (клики > 30, конв. = 0)"],
+                horizontal=True, key="kw_view_mode",
+            )
+            if kw_view == "Топ-30 по расходу":
+                kw_show = kw.sort_values("spend_rub", ascending=False).head(30)
+            elif kw_view == "Топ-30 с конверсиями":
+                kw_show = (kw[kw["conversions"] > 0]
+                           .sort_values("conversions", ascending=False).head(30))
+            else:
+                kw_show = (kw[(kw["clicks"] > 30) & (kw["conversions"].fillna(0) == 0)]
+                           .sort_values("spend_rub", ascending=False).head(30))
+
+            if kw_show.empty:
+                st.info("По выбранному фильтру нет данных.")
+            else:
+                display_cols = {
+                    "criterion": "Ключевик / фраза",
+                    "campaign": "Кампания",
+                    "ad_group": "Группа",
+                    "match_type": "Тип",
+                    "impressions": "Показы",
+                    "clicks": "Клики",
+                    "ctr": "CTR, %",
+                    "spend_rub": "Расход, ₽",
+                    "avg_cpc": "CPC, ₽",
+                    "conversions": "Конв.",
+                    "conversion_rate": "CR, %",
+                    "cost_per_conversion": "CPL, ₽",
+                }
+                available = [c for c in display_cols if c in kw_show.columns]
+                st.dataframe(
+                    kw_show[available].rename(columns=display_cols),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                        "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                        "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                        "CR, %": st.column_config.NumberColumn(format="%.2f"),
+                        "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                        "CPL, ₽": st.column_config.NumberColumn(format="%.0f"),
+                    },
+                )
+                if kw_view == "Топ-30 убыточных (клики > 30, конв. = 0)" and not kw_show.empty:
+                    waste = kw_show["spend_rub"].sum()
+                    st.caption(
+                        f"💸 Эти {len(kw_show)} ключевиков съели **{fmt_rub(waste)}** "
+                        f"без единой конверсии. Кандидаты на минус-слова или удаление."
+                    )
+
+    # ─── Tab 3: ОБЪЯВЛЕНИЯ ───────────────────────────────────
+    with quality_tabs[2]:
+        if _q_ad.empty:
+            st.info("Нет данных. Нажмите «Подтянуть качество» в сайдбаре.")
+        else:
+            ad = _q_ad.copy()
+            for col in ("ctr", "conversion_rate", "conversions",
+                        "avg_cpc", "spend_rub", "impressions", "clicks"):
+                if col in ad.columns:
+                    ad[col] = pd.to_numeric(ad[col], errors="coerce")
+            ad_show = ad.sort_values("spend_rub", ascending=False).head(40)
+
+            st.caption(
+                "Топ-40 объявлений по расходу. AdId — id объявления в Директе "
+                "(чтобы увидеть текст/картинку: direct.yandex.ru → найти по id)."
+            )
+            display_cols = {
+                "ad_id": "AdId",
+                "campaign": "Кампания",
+                "ad_group": "Группа",
+                "impressions": "Показы",
+                "clicks": "Клики",
+                "ctr": "CTR, %",
+                "spend_rub": "Расход, ₽",
+                "avg_cpc": "CPC, ₽",
+                "conversions": "Конв.",
+                "conversion_rate": "CR, %",
+            }
+            available = [c for c in display_cols if c in ad_show.columns]
+            st.dataframe(
+                ad_show[available].rename(columns=display_cols),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                    "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                    "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                    "CR, %": st.column_config.NumberColumn(format="%.2f"),
+                    "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                },
+            )
 
 
 # ============================================================
