@@ -64,8 +64,25 @@ st.markdown(
     .stApp {{
         background: {PALETTE['bg']};
     }}
-    .main .block-container {{
-        padding-top: 1.4rem; padding-bottom: 2.4rem; max-width: 1500px;
+    /* Сжимаем боковые отступы у main, чтобы убрать «море белого» */
+    .main .block-container,
+    section.main > div > div > div.block-container,
+    [data-testid="stMainBlockContainer"] {{
+        padding-top: 1.1rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1.6rem !important;
+        padding-right: 1.6rem !important;
+        max-width: none !important;
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }}
+    /* Сужаем sidebar чуть для большего useful space */
+    [data-testid="stSidebar"][aria-expanded="true"] {{
+        min-width: 260px !important; max-width: 280px !important;
+    }}
+    [data-testid="stSidebar"] .block-container {{
+        padding-top: 1.1rem !important; padding-left: 1rem !important;
+        padding-right: 1rem !important;
     }}
 
     /* Заголовок */
@@ -74,41 +91,41 @@ st.markdown(
     }}
     .ufo-hero {{
         display: flex; align-items: flex-end; justify-content: space-between;
-        padding: 0.4rem 0 1.3rem 0;
+        padding: 0.2rem 0 0.9rem 0;
         border-bottom: 1px solid {PALETTE['border']};
-        margin-bottom: 1.6rem;
+        margin-bottom: 1.1rem;
     }}
-    .ufo-hero h1 {{ margin: 0; font-size: 1.75rem; color: {PALETTE['text']}; letter-spacing: -0.5px; }}
+    .ufo-hero h1 {{ margin: 0; font-size: 1.65rem; color: {PALETTE['text']}; letter-spacing: -0.4px; }}
     .ufo-hero .ufo-sub {{
-        color: {PALETTE['muted']}; font-size: 0.85rem; margin-top: 0.3rem;
-        letter-spacing: 0.2px;
+        color: {PALETTE['muted']}; font-size: 0.82rem; margin-top: 0.25rem;
+        letter-spacing: 0.15px;
     }}
     .ufo-hero .ufo-period-badge {{
         background: {PALETTE['panel']}; color: {PALETTE['text']};
-        padding: 0.45rem 0.9rem; border-radius: 6px; font-weight: 600;
-        font-size: 0.82rem; border: 1px solid {PALETTE['border']};
+        padding: 0.4rem 0.85rem; border-radius: 6px; font-weight: 600;
+        font-size: 0.8rem; border: 1px solid {PALETTE['border']};
         white-space: nowrap;
     }}
 
-    /* KPI плитки */
+    /* KPI плитки — плотнее */
     .kpi-card {{
         background: #ffffff;
         border: 1px solid {PALETTE['border']};
         border-radius: 10px;
-        padding: 1.05rem 1.2rem;
+        padding: 0.85rem 1rem;
         height: 100%;
         transition: border-color 0.15s ease;
     }}
     .kpi-card:hover {{ border-color: #8c959f; }}
     .kpi-card .kpi-label {{
-        color: {PALETTE['muted']}; font-size: 0.72rem; text-transform: uppercase;
-        letter-spacing: 0.4px; margin-bottom: 0.5rem; font-weight: 600;
+        color: {PALETTE['muted']}; font-size: 0.7rem; text-transform: uppercase;
+        letter-spacing: 0.4px; margin-bottom: 0.35rem; font-weight: 600;
     }}
     .kpi-card .kpi-value {{
-        color: {PALETTE['text']}; font-size: 1.65rem; font-weight: 700; line-height: 1.15;
+        color: {PALETTE['text']}; font-size: 1.55rem; font-weight: 700; line-height: 1.1;
     }}
     .kpi-card .kpi-delta {{
-        margin-top: 0.45rem; font-size: 0.78rem; color: {PALETTE['muted']};
+        margin-top: 0.35rem; font-size: 0.75rem; color: {PALETTE['muted']};
     }}
     .kpi-card.primary .kpi-value {{ color: {PALETTE['primary']}; }}
     .kpi-card.green   .kpi-value {{ color: {PALETTE['green']}; }}
@@ -118,9 +135,12 @@ st.markdown(
     .kpi-delta.down {{ color: {PALETTE['red']}; font-weight: 600; }}
     .kpi-delta.neutral {{ color: {PALETTE['muted']}; }}
 
+    /* Уменьшаем gap между колонками */
+    [data-testid="stHorizontalBlock"] {{ gap: 0.7rem !important; }}
+
     /* Секции */
     .section-title {{
-        margin: 1.8rem 0 0.7rem 0; font-size: 0.92rem; font-weight: 700;
+        margin: 1.2rem 0 0.55rem 0; font-size: 0.82rem; font-weight: 700;
         color: {PALETTE['muted']}; text-transform: uppercase; letter-spacing: 0.5px;
     }}
 
@@ -128,21 +148,25 @@ st.markdown(
     [data-testid="stSidebar"] {{
         background: {PALETTE['panel']}; border-right: 1px solid {PALETTE['border']};
     }}
-    [data-testid="stSidebar"] h1 {{ font-size: 1.2rem; }}
+    [data-testid="stSidebar"] h1 {{ font-size: 1.15rem; }}
+    [data-testid="stSidebar"] h3 {{ font-size: 1.05rem; margin: 0; }}
 
     /* Дефолтные st.metric */
-    [data-testid="stMetricValue"] {{ font-size: 1.5rem; font-weight: 700; }}
+    [data-testid="stMetricValue"] {{ font-size: 1.4rem; font-weight: 700; }}
     [data-testid="stMetricLabel"] {{
-        font-size: 0.72rem; color: {PALETTE['muted']};
+        font-size: 0.7rem; color: {PALETTE['muted']};
         text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600;
     }}
 
     .streamlit-expanderHeader {{ font-weight: 600; }}
 
+    /* Плотнее отступы alerts */
+    [data-testid="stAlert"] {{ padding: 0.7rem 0.95rem !important; }}
+
     /* Footer */
     .ufo-footer {{
         color: {PALETTE['muted']}; font-size: 0.78rem; text-align: center;
-        margin-top: 2rem; padding-top: 1rem;
+        margin-top: 1.5rem; padding-top: 0.85rem;
         border-top: 1px solid {PALETTE['border']};
     }}
     </style>
@@ -632,7 +656,7 @@ c4.markdown(kpi_card(
     kind="primary",
 ), unsafe_allow_html=True)
 
-st.markdown("<div style='height: 0.8rem'></div>", unsafe_allow_html=True)
+st.markdown("<div style='height: 0.4rem'></div>", unsafe_allow_html=True)
 
 # Row 2 — второстепенные 4 плитки
 c5, c6, c7, c8 = st.columns(4)
