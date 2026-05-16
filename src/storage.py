@@ -65,23 +65,24 @@ def ensure_dataset_exists() -> bool:
 
 def sync_down() -> dict:
     """Скачиваем все файлы из dataset в локальный кэш data/.
-    Возвращает счётчик скачанных файлов."""
+    Возвращает счётчик скачанных файлов + диагностику."""
     token = _get_token()
     if not token:
-        return {"orders": 0, "ads": 0, "enabled": False}
+        return {"orders": 0, "ads": 0, "enabled": False, "error": "no_token"}
     try:
         from huggingface_hub import HfApi, hf_hub_download
         api = HfApi(token=token)
         files = api.list_repo_files(repo_id=DATASET_REPO, repo_type=DATASET_TYPE)
-    except Exception:
-        return {"orders": 0, "ads": 0, "enabled": True, "error": "list_failed"}
+    except Exception as e:
+        return {"orders": 0, "ads": 0, "enabled": True, "error": f"list_failed: {type(e).__name__}: {str(e)[:200]}"}
 
-    counts = {"orders": 0, "ads": 0, "enabled": True}
+    counts = {"orders": 0, "ads": 0, "enabled": True, "files_in_dataset": len(files)}
+    last_err = None
     for f in files:
         if not (f.startswith(f"{ORDERS_SUBDIR}/") or f.startswith(f"{ADS_SUBDIR}/")):
             continue
         try:
-            local = hf_hub_download(
+            hf_hub_download(
                 repo_id=DATASET_REPO,
                 repo_type=DATASET_TYPE,
                 filename=f,
@@ -92,8 +93,11 @@ def sync_down() -> dict:
                 counts["orders"] += 1
             else:
                 counts["ads"] += 1
-        except Exception:
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)[:200]}"
             continue
+    if last_err:
+        counts["error"] = last_err
     return counts
 
 

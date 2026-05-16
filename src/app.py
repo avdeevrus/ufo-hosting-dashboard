@@ -241,11 +241,27 @@ with st.sidebar:
                     st.session_state[key] = True
                     st.toast(f"💾 {f.name} сохранён в облако", icon="✅")
 
-    storage_status = "💾 Облако подключено" if storage.is_enabled() else "🔌 Облачное хранилище не подключено"
+    if storage.is_enabled():
+        if st.button("🔄 Обновить из облака", use_container_width=True, key="resync_btn"):
+            st.cache_resource.clear()
+            st.cache_data.clear()
+            st.rerun()
+        if _sync_info and _sync_info.get("error"):
+            st.error(f"⚠️ Ошибка облака: {_sync_info['error']}", icon="⚠️")
+        elif _sync_info and _sync_info.get("enabled"):
+            n_o = _sync_info.get("orders", 0)
+            n_a = _sync_info.get("ads", 0)
+            n_files = _sync_info.get("files_in_dataset", 0)
+            st.caption(
+                f"💾 Облако подключено · в датасете файлов: {n_files}  \n"
+                f"⬇️ Скачано: {n_o} заказов, {n_a} рекламы"
+            )
+        else:
+            st.caption("💾 Облако подключено · ожидание синхронизации")
+    else:
+        st.caption("🔌 Облачное хранилище не подключено")
     st.caption(
-        f"{storage_status}  \n"
-        f"📁 заказов: {len(list(ORDERS_DIR.glob('*.csv')))}  \n"
-        f"📁 рекламы: {len(list(ADS_DIR.glob('*.xlsx')))}"
+        f"📁 на диске: {len(list(ORDERS_DIR.glob('*.csv')))} заказов · {len(list(ADS_DIR.glob('*.xlsx')))} рекламы"
     )
 
     st.divider()
