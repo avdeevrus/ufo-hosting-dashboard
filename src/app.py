@@ -522,6 +522,11 @@ if not ads_all.empty:
     ad_max = ads_all["month"].max().date()
 else:
     ad_min, ad_max = pay_min, pay_max
+# Учитываем даты API данных в overall_max
+if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
+    api_max = st.session_state["yd_api_ads"]["month"].max().date()
+    if api_max > ad_max:
+        ad_max = api_max
 overall_min = min(pay_min, ad_min)
 overall_max = max(pay_max, ad_max)
 
@@ -649,12 +654,33 @@ with placeholder_filters:
 
 
 orders = M.filter_orders_by_period(orders_all, d_from, d_to)
-# объединяем XLSX и API данные
+
+# Объединяем XLSX и API расходы по принципу «лучший источник на месяц»
+# - Для каждого месяца, в котором есть данные API: если API покрывает ≥80% от XLSX,
+#   считаем что API даёт полный месяц и замещаем XLSX.
+# - Иначе оставляем XLSX (API частичный, чтобы не задвоить данные).
 ads_combined = ads_all
 if "yd_api_ads" in st.session_state and not st.session_state["yd_api_ads"].empty:
-    ads_combined = pd.concat([ads_all, st.session_state["yd_api_ads"]], ignore_index=True)
-    # дедуплицируем по (month, campaign) — API данные приоритетнее
-    ads_combined = ads_combined.drop_duplicates(subset=["month", "campaign"], keep="last")
+    api_ads = st.session_state["yd_api_ads"]
+    api_sum_by_month = api_ads.groupby("month")["spend_rub"].sum()
+    xlsx_sum_by_month = ads_all.groupby("month")["spend_rub"].sum() if not ads_all.empty else pd.Series(dtype=float)
+    months_replace = set()  # API замещает XLSX за этот месяц целиком
+    months_add = set()       # месяца есть только в API — просто добавить
+    for m, api_v in api_sum_by_month.items():
+        xlsx_v = xlsx_sum_by_month.get(m, 0)
+        if xlsx_v == 0:
+            months_add.add(m)
+        elif api_v >= 0.8 * xlsx_v:
+            months_replace.add(m)
+        # иначе — API частичный, игнорируем за этот месяц
+    keep_api_months = months_replace | months_add
+    xlsx_keep = ads_all[~ads_all["month"].isin(months_replace)] if not ads_all.empty else ads_all
+    api_keep = api_ads[api_ads["month"].isin(keep_api_months)]
+    if not api_keep.empty:
+        ads_combined = pd.concat([xlsx_keep, api_keep], ignore_index=True)
+    else:
+        ads_combined = ads_all
+
 ads = M.filter_ads_by_period(ads_combined, d_from, d_to)
 ads_all = ads_combined  # чтобы остальной код видел совместный набор
 
@@ -728,8 +754,8 @@ c1, c2, c3, c4 = st.columns(4)
 c1.markdown(kpi_card(
     "Расход на Директ",
     fmt_rub(ck.spend),
-    f"за {period_label}", kind="red", delta_kind="neutral",
-    tooltip="Сумма списаний в Яндекс.Директе за выбранный период. Тянется из XLSX-отчётов или из API после модерации Яндекса.",
+    f"с НДС · {period_label}", kind="red", delta_kind="neutral",
+    tooltip="Сумма списаний в Яндекс.Директе за период. Суммы указаны с учётом НДС (как у Яндекса). Тянется из XLSX или из API.",
 ), unsafe_allow_html=True)
 c2.markdown(kpi_card(
     "Доход (оплаты)",
