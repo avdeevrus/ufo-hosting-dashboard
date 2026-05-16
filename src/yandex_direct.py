@@ -88,8 +88,9 @@ def fetch_campaign_report(creds: DirectCredentials,
             time.sleep(wait)
             continue
         if r.status_code >= 400 and r.status_code != 200:
-            # Распакуем человекочитаемую ошибку
+            # Распакуем человекочитаемую ошибку, форсируя UTF-8
             try:
+                r.encoding = "utf-8"
                 err = r.json().get("error", {})
                 code = err.get("error_code")
                 es = err.get("error_string", "")
@@ -97,14 +98,20 @@ def fetch_campaign_report(creds: DirectCredentials,
                 msg = f"Я.Директ API ошибка {code}: {es}"
                 if ed:
                     msg += f" — {ed}"
-                if code == 53:  # NO_RIGHTS
-                    msg += "\nПроверьте, что в OAuth-приложении выбрано право «Использование API Директа»."
-                elif code == 54:  # no campaigns
-                    msg += "\nПо аккаунту нет рекламных кампаний за указанный период."
-                elif code == 8800:
-                    msg += "\nЭто агентский аккаунт — нужен HTTP-заголовок Client-Login. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
-                elif code == 152:
-                    msg += "\nОтчёт уже строится, попробуйте через минуту."
+                if code in (53, "53"):
+                    msg += "\n→ В OAuth-приложении должно быть право «Использование API Директа»."
+                elif code in (54, "54"):
+                    msg += "\n→ За период нет рекламных кампаний."
+                elif code in (58, "58"):
+                    msg += (
+                        "\n→ Нужна модерация Яндекса: зайдите на direct.yandex.ru → "
+                        "Инструменты → Управление доступом → API → подайте заявку на доступ. "
+                        "Модерация до 1–2 рабочих дней. До этого момента используйте XLSX-выгрузки."
+                    )
+                elif code in (8800, "8800"):
+                    msg += "\n→ Агентский аккаунт. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
+                elif code in (152, "152"):
+                    msg += "\n→ Отчёт уже строится, попробуйте через минуту."
                 raise RuntimeError(msg)
             except (ValueError, KeyError):
                 raise RuntimeError(f"Я.Директ API HTTP {r.status_code}: {r.text[:400]}")
