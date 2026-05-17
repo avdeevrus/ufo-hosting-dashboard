@@ -1598,6 +1598,31 @@ def _hero_delta_html(cur_val, prev_val, *, invert=False, suffix=""):
 # ─── Hero KPI: Прибыль (большая плитка) ──────────────────────
 profit_hero_kind = "green" if profit >= 0 else "red"
 profit_delta = _hero_delta_html(profit, prev_profit, suffix=" vs прошлый")
+
+# Предупреждение о неоднородности данных: если есть месяцы с расходом на
+# Директ, но без CSV платежей — главный ROMI смешивает 9 месяцев расхода
+# с N месяцами дохода. Показываем «честный» ROMI за overlap-период.
+_data_mismatch_note = ""
+_ck_comp = M.comparable_kpi(orders, ads)
+if _ck_comp is not None and _ck_comp.spend > 0 and ck.spend > 0:
+    _romi_full = (ck.revenue - ck.spend) / ck.spend * 100
+    _romi_comp = (_ck_comp.revenue - _ck_comp.spend) / _ck_comp.spend * 100
+    # Триггерим только при значимом расхождении (≥5 п.п.) — иначе шум
+    if (ck.spend - _ck_comp.spend) > 0 and abs(_romi_full - _romi_comp) >= 5:
+        _missing_share = (ck.spend - _ck_comp.spend) / ck.spend * 100
+        _data_mismatch_note = (
+            f'<div style="margin-top:0.55rem; padding:0.5rem 0.7rem; '
+            f'background:rgba(250,204,21,0.18); border-left:3px solid #facc15; '
+            f'border-radius:4px; font-size:0.78rem; color:#525a62; line-height:1.45;">'
+            f'⚠️ <b>{_missing_share:.0f}%</b> расхода на Директ '
+            f'({fmt_rub(ck.spend - _ck_comp.spend)}) приходится на месяцы, '
+            f'за которые нет CSV-выгрузок — поэтому общий ROMI занижен. '
+            f'Честный ROMI за overlap-период: <b>{_romi_comp:+.1f}%</b> '
+            f'(доход {fmt_rub(_ck_comp.revenue)} vs расход {fmt_rub(_ck_comp.spend)}). '
+            f'Подгрузите CSV за недостающие месяцы — цифра пересчитается.'
+            f'</div>'
+        )
+
 st.markdown(
     f"""
     <div class="kpi-hero {profit_hero_kind}">
@@ -1608,6 +1633,7 @@ st.markdown(
           Доход <b>{fmt_rub(ck.revenue)}</b> минус себестоимость <b>{fmt_rub(cogs_amount)}</b> ({cogs_pct}%)
           минус расход на Директ <b>{fmt_rub(ck.spend)}</b> · маржа {profit_margin:+.1f}%
         </div>
+        {_data_mismatch_note}
       </div>
       <div class="kpi-hero-breakdown">
         <div class="kpi-hero-bd-item">
