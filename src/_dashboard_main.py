@@ -113,20 +113,27 @@ if not _check_password():
 # ============================================================
 #                       Progress-индикатор
 # ============================================================
-# Виден сразу после ввода пароля — пользователь не смотрит на пустой экран,
-# пока бэкенд парсит CSV/XLSX и считает метрики. Обновляется на каждом этапе
-# и автоматически убирается в конце скрипта.
-_progress_placeholder = st.empty()
+# Виден ТОЛЬКО при первой загрузке за сессию — когда реально парсятся
+# CSV/XLSX, синхронизируется HF, и т.д. (десятки секунд). При переходе
+# между страницами и rerun'ах — все данные уже в @st.cache_resource /
+# @st.cache_data, поэтому прогресс не нужен (и его мелькание раздражало
+# пользователя: «постоянно идёт сбор статистики»).
+_show_progress = not st.session_state.get("_dashboard_loaded_once", False)
+_progress_placeholder = st.empty() if _show_progress else None
 
 
 def _progress(stage: str, pct: int) -> None:
-    """Обновляет видимый прогресс-бар. pct: 0-100."""
-    _progress_placeholder.progress(pct / 100, text=f"⏳ {stage}")
+    """Обновляет видимый прогресс-бар. pct: 0-100.
+    No-op после первой загрузки за сессию."""
+    if _progress_placeholder is not None:
+        _progress_placeholder.progress(pct / 100, text=f"⏳ {stage}")
 
 
 def _progress_done() -> None:
     """Убирает прогресс-бар. Вызывается когда вся загрузка завершена."""
-    _progress_placeholder.empty()
+    if _progress_placeholder is not None:
+        _progress_placeholder.empty()
+    st.session_state["_dashboard_loaded_once"] = True
 
 
 _progress("Запускаю дашборд…", 5)
@@ -864,7 +871,7 @@ def _render_insights(items):
 #                       Persistent storage (HF Dataset)
 # ============================================================
 
-@st.cache_resource(show_spinner="Синхронизирую данные из облака…")
+@st.cache_resource(show_spinner=False)
 def _initial_storage_sync():
     if not storage.is_enabled():
         return {"enabled": False}
@@ -1027,7 +1034,7 @@ with st.sidebar:
 #                       Data loading
 # ============================================================
 
-@st.cache_data(show_spinner="Парсим данные…", ttl=300)
+@st.cache_data(show_spinner=False, ttl=300)
 def load_all(orders_signature: tuple, ads_signature: tuple,
              uploaded_orders_data: tuple, uploaded_ads_data: tuple):
     """Cache-key включает имена и размеры загруженных файлов, чтобы кэш инвалидировался."""
@@ -2355,9 +2362,11 @@ if _mk_creds is not None and MK is not None:
         return summary, funnel, sources, direct
 
     _mk_period = (d_from.strftime("%Y-%m-%d"), d_to.strftime("%Y-%m-%d"))
+    # Без st.spinner — иначе при переходах между страницами мелькает
+    # «Тяну данные…» даже когда данные из кэша (с TTL 1800сек) и приходят
+    # моментально. Реальная загрузка происходит 1 раз за 30 минут.
     try:
-        with st.spinner("📡 Тяну данные из Яндекс.Метрики…"):
-            mk_summary, mk_funnel, mk_sources, mk_direct = _cached_metrika(_mk_period)
+        mk_summary, mk_funnel, mk_sources, mk_direct = _cached_metrika(_mk_period)
     except Exception as e:
         st.warning(f"Не удалось получить данные из Метрики: {e}")
         mk_summary = mk_funnel = mk_sources = mk_direct = pd.DataFrame()
