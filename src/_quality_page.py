@@ -410,10 +410,16 @@ def _safe_div(a, b):
 rows = []
 campaigns_sorted = _camp.sort_values("spend_rub", ascending=False)
 
+# Префиксы в имени узла на 3-м уровне — чтобы AgGrid визуально различал
+# параллельные ветки «объявление» и «ключ» внутри одной группы.
+AD_PREFIX = "📰 "
+KW_PREFIX = "🔑 "
+
 for _, cr in campaigns_sorted.iterrows():
-    camp_name = cr.get("campaign", "—") or "—"
-    row_c = {
-        "path":         [str(camp_name)],
+    camp_name = str(cr.get("campaign", "—") or "—")
+    # ─── Уровень 1: Кампания ─────────────────────────────────
+    rows.append({
+        "path":         [camp_name],
         "level":        "🎯 Кампания",
         "impressions":  float(cr.get("impressions", 0) or 0),
         "clicks":       float(cr.get("clicks", 0) or 0),
@@ -424,50 +430,82 @@ for _, cr in campaigns_sorted.iterrows():
         "conversion_rate": float(cr.get("conversion_rate", 0) or 0),
         "cpl":          float(cr.get("cost_per_conversion", 0) or 0),
         "bounce_rate":  float(cr.get("bounce_rate", 0) or 0),
-    }
-    rows.append(row_c)
+    })
 
-    # Группы внутри этой кампании
-    if not _ad.empty:
-        camp_ads = _ad[_ad["campaign"] == camp_name]
-        if camp_ads.empty:
-            continue
-        for grp_name, grp_df in camp_ads.groupby("ad_group", sort=False):
-            g_impr  = float(grp_df["impressions"].sum())
-            g_clk   = float(grp_df["clicks"].sum())
-            g_spnd  = float(grp_df["spend_rub"].sum())
-            g_conv  = float(grp_df["conversions"].sum())
+    # Все группы этой кампании — берём union из _ad и _kw_all
+    camp_ads = _ad[_ad["campaign"] == camp_name] if not _ad.empty else pd.DataFrame()
+    camp_kws = _kw_all[_kw_all["campaign"] == camp_name] if not _kw_all.empty else pd.DataFrame()
+    group_names = set()
+    if not camp_ads.empty:
+        group_names.update(camp_ads["ad_group"].dropna().astype(str).unique())
+    if not camp_kws.empty:
+        group_names.update(camp_kws["ad_group"].dropna().astype(str).unique())
+
+    for grp_name in sorted(group_names):
+        grp_ads = camp_ads[camp_ads["ad_group"] == grp_name] if not camp_ads.empty else pd.DataFrame()
+        grp_kws = camp_kws[camp_kws["ad_group"] == grp_name] if not camp_kws.empty else pd.DataFrame()
+
+        # ─── Уровень 2: Группа (агрегат из объявлений) ───────
+        # Метрики берём из объявлений (полные); если объявлений нет,
+        # пересчитываем из ключевиков (тоже даёт impressions/clicks/spend).
+        src = grp_ads if not grp_ads.empty else grp_kws
+        g_impr = float(src["impressions"].sum()) if "impressions" in src else 0.0
+        g_clk  = float(src["clicks"].sum())      if "clicks"      in src else 0.0
+        g_spnd = float(src["spend_rub"].sum())   if "spend_rub"   in src else 0.0
+        g_conv = float(src["conversions"].sum()) if "conversions" in src else 0.0
+        rows.append({
+            "path":         [camp_name, str(grp_name)],
+            "level":        "📁 Группа",
+            "impressions":  g_impr,
+            "clicks":       g_clk,
+            "ctr":          _safe_div(g_clk, g_impr) * 100,
+            "spend_rub":    g_spnd,
+            "avg_cpc":      _safe_div(g_spnd, g_clk),
+            "conversions":  g_conv,
+            "conversion_rate": _safe_div(g_conv, g_clk) * 100,
+            "cpl":          _safe_div(g_spnd, g_conv),
+            "bounce_rate":  0.0,
+        })
+
+        # ─── Уровень 3a: Объявления внутри группы ────────────
+        for _, ar in grp_ads.sort_values("spend_rub", ascending=False).iterrows():
+            ad_id = ar.get("ad_id", "—")
             rows.append({
-                "path":         [str(camp_name), str(grp_name)],
-                "level":        "📁 Группа",
-                "impressions":  g_impr,
-                "clicks":       g_clk,
-                "ctr":          _safe_div(g_clk, g_impr) * 100,
-                "spend_rub":    g_spnd,
-                "avg_cpc":      _safe_div(g_spnd, g_clk),
-                "conversions":  g_conv,
-                "conversion_rate": _safe_div(g_conv, g_clk) * 100,
-                "cpl":          _safe_div(g_spnd, g_conv),
+                "path":         [camp_name, str(grp_name), f"{AD_PREFIX}#{ad_id}"],
+                "level":        "📰 Объявление",
+                "impressions":  float(ar.get("impressions", 0) or 0),
+                "clicks":       float(ar.get("clicks", 0) or 0),
+                "ctr":          float(ar.get("ctr", 0) or 0),
+                "spend_rub":    float(ar.get("spend_rub", 0) or 0),
+                "avg_cpc":      float(ar.get("avg_cpc", 0) or 0),
+                "conversions":  float(ar.get("conversions", 0) or 0),
+                "conversion_rate": float(ar.get("conversion_rate", 0) or 0),
+                "cpl":          0.0,
                 "bounce_rate":  0.0,
             })
 
-            # Объявления внутри группы — сортируем по расходу
-            grp_sorted = grp_df.sort_values("spend_rub", ascending=False)
-            for _, ar in grp_sorted.iterrows():
-                ad_id = ar.get("ad_id", "—")
-                rows.append({
-                    "path":         [str(camp_name), str(grp_name), f"#{ad_id}"],
-                    "level":        "📰 Объявление",
-                    "impressions":  float(ar.get("impressions", 0) or 0),
-                    "clicks":       float(ar.get("clicks", 0) or 0),
-                    "ctr":          float(ar.get("ctr", 0) or 0),
-                    "spend_rub":    float(ar.get("spend_rub", 0) or 0),
-                    "avg_cpc":      float(ar.get("avg_cpc", 0) or 0),
-                    "conversions":  float(ar.get("conversions", 0) or 0),
-                    "conversion_rate": float(ar.get("conversion_rate", 0) or 0),
-                    "cpl":          0.0,
-                    "bounce_rate":  0.0,
-                })
+        # ─── Уровень 3b: Ключевые фразы внутри группы ────────
+        # Ключи в Я.Директе привязаны к ГРУППЕ (а не к объявлению),
+        # поэтому на 3-м уровне параллельно с объявлениями. У ключа
+        # имя = criterion (текст фразы); добавляем тип соответствия
+        # в скобках если есть.
+        for _, kr in grp_kws.sort_values("spend_rub", ascending=False).iterrows():
+            crit = str(kr.get("criterion", "—") or "—")
+            mt = kr.get("match_type", "") or ""
+            label = f"{KW_PREFIX}{crit}" + (f" [{mt}]" if mt else "")
+            rows.append({
+                "path":         [camp_name, str(grp_name), label],
+                "level":        "🔑 Ключ",
+                "impressions":  float(kr.get("impressions", 0) or 0),
+                "clicks":       float(kr.get("clicks", 0) or 0),
+                "ctr":          float(kr.get("ctr", 0) or 0),
+                "spend_rub":    float(kr.get("spend_rub", 0) or 0),
+                "avg_cpc":      float(kr.get("avg_cpc", 0) or 0),
+                "conversions":  float(kr.get("conversions", 0) or 0),
+                "conversion_rate": float(kr.get("conversion_rate", 0) or 0),
+                "cpl":          float(kr.get("cost_per_conversion", 0) or 0),
+                "bounce_rate":  0.0,
+            })
 
 tree_df = pd.DataFrame(rows)
 
@@ -532,8 +570,8 @@ else:
         "groupDefaultExpanded": 0,  # 0 = всё свернуто, 1 = до 1-го уровня
         "getDataPath": get_data_path,
         "autoGroupColumnDef": {
-            "headerName": "Кампания / Группа / Объявление",
-            "minWidth": 380,
+            "headerName": "Кампания / Группа / Объявление / Ключ",
+            "minWidth": 420,
             "pinned": "left",
             "cellRendererParams": {
                 "suppressCount": True,  # не показывать "(N)" рядом с группой
@@ -556,11 +594,13 @@ else:
             {"field": "cpl",           "headerName": "CPL",        "valueFormatter": fmt_money, "width": 110, "type": "numericColumn"},
             {"field": "bounce_rate",   "headerName": "Отказы",     "valueFormatter": fmt_pct,   "width":  95, "type": "numericColumn"},
         ],
-        "rowData": tree_df.to_dict(orient="records"),
     }
 
+    # ВАЖНО: передаём data как list of dicts, а не DataFrame.
+    # streamlit-aggrid 1.0.5 делает `if data:` на переданном объекте —
+    # на DataFrame это бросает ValueError (ambiguous truth value).
     AgGrid(
-        tree_df,
+        data=tree_df.to_dict(orient="records"),
         gridOptions=grid_options,
         allow_unsafe_jscode=True,
         height=720,
@@ -569,80 +609,3 @@ else:
         fit_columns_on_grid_load=False,
     )
 
-
-# ============================================================
-#                        КЛЮЧЕВЫЕ СЛОВА
-# ============================================================
-# Ключи показываем под основной таблицей — для конкретной кампании,
-# выбранной пользователем (а не сразу все 5000+ строк).
-
-if _kw_all.empty:
-    st.info("📭 Нет данных по ключевикам.")
-else:
-    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
-    st.markdown(
-        '<div style="font-size:1.05rem; font-weight:600; margin-bottom:0.4rem;">'
-        '🔑 Ключевые слова</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Фильтры: кампания + представление
-    kw_camps = ["Все кампании"] + sorted(_kw_all["campaign"].dropna().unique().tolist())
-    kw_f1, kw_f2 = st.columns([2, 3])
-    sel_kw_camp = kw_f1.selectbox("Кампания", options=kw_camps, key="kw_camp_filter")
-    kw_view = kw_f2.radio(
-        "Что показать",
-        ["Топ-30 по расходу",
-         "Топ-30 с конверсиями",
-         "Топ-30 убыточных (клики > 30, конв. = 0)"],
-        horizontal=True, key="kw_view_mode",
-    )
-
-    _kw = _kw_all if sel_kw_camp == "Все кампании" else _kw_all[_kw_all["campaign"] == sel_kw_camp]
-
-    if kw_view == "Топ-30 по расходу":
-        kw_show = _kw.sort_values("spend_rub", ascending=False).head(30)
-    elif kw_view == "Топ-30 с конверсиями":
-        kw_show = (_kw[_kw["conversions"] > 0]
-                   .sort_values("conversions", ascending=False).head(30))
-    else:
-        kw_show = (_kw[(_kw["clicks"] > 30) & (_kw["conversions"].fillna(0) == 0)]
-                   .sort_values("spend_rub", ascending=False).head(30))
-
-    if kw_show.empty:
-        st.info("По выбранному фильтру нет данных.")
-    else:
-        display_cols = {
-            "criterion":   "Ключевик / фраза",
-            "campaign":    "Кампания",
-            "ad_group":    "Группа",
-            "match_type":  "Тип",
-            "impressions": "Показы",
-            "clicks":      "Клики",
-            "ctr":         "CTR, %",
-            "spend_rub":   "Расход, ₽",
-            "avg_cpc":     "CPC, ₽",
-            "conversions": "Конв.",
-            "conversion_rate":     "CR, %",
-            "cost_per_conversion": "CPL, ₽",
-        }
-        available = [c for c in display_cols if c in kw_show.columns]
-        st.dataframe(
-            kw_show[available].rename(columns=display_cols),
-            use_container_width=True, hide_index=True,
-            column_config={
-                "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
-                "CPC, ₽":    st.column_config.NumberColumn(format="%.1f"),
-                "CTR, %":    st.column_config.NumberColumn(format="%.2f"),
-                "CR, %":     st.column_config.NumberColumn(format="%.2f"),
-                "Конв.":     st.column_config.NumberColumn(format="%.0f"),
-                "CPL, ₽":    st.column_config.NumberColumn(format="%.0f"),
-            },
-        )
-
-        if kw_view.startswith("Топ-30 убыточных") and not kw_show.empty:
-            waste = kw_show["spend_rub"].sum()
-            st.caption(
-                f"💸 Эти {len(kw_show)} ключевиков съели **{fmt_rub(waste)}** "
-                f"без единой конверсии. Кандидаты на минус-слова или удаление."
-            )
