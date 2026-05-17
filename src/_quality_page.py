@@ -33,6 +33,35 @@ from _shared import (
     render_cache_reset_button,
 )
 from yandex_direct import get_credentials as yd_creds
+import storage
+
+
+# При старте страницы тянем кэш качества с HF Dataset (если он там есть от
+# прошлой сессии или другого устройства). Это критично на Streamlit Cloud:
+# при каждом деплое контейнер пересоздаётся и локальный data/api_cache/*.json
+# стирается → без этого sync_down автозагрузка дёргалась каждый раз.
+# st.cache_resource гарантирует один вызов на сессию.
+@st.cache_resource(show_spinner=False)
+def _initial_quality_sync():
+    return storage.sync_quality_cache_down() if storage.is_enabled() else None
+
+
+_initial_quality_sync()
+
+
+def _save_and_sync(kind: str, df: pd.DataFrame, period: tuple) -> None:
+    """save_quality_cache + upload в HF Dataset (если включён). Чтобы кэш
+    переживал рестарты контейнера и был доступен в других сессиях."""
+    save_quality_cache(kind, df, period)
+    if storage.is_enabled():
+        filename_map = {
+            "campaign_quality": "yd_campaign_quality.json",
+            "keywords": "yd_keywords.json",
+            "ads_creatives": "yd_ads_creatives.json",
+        }
+        fname = filename_map.get(kind)
+        if fname:
+            storage.sync_quality_cache_up(fname)
 
 
 # ─── Password gate ────────────────────────────────────────────
@@ -132,7 +161,7 @@ with st.sidebar:
                         creds_q, *period_str,
                         progress_callback=_make_progress(1, "Кампании"),
                     )
-                    save_quality_cache("campaign_quality", cq, period_str)
+                    _save_and_sync("campaign_quality", cq, period_str)
                     st.write(f"✅ Кампании: {len(cq)} строк")
 
                     st_status.update(label="📥 [2/3] Ключевые слова…", state="running")
@@ -140,7 +169,7 @@ with st.sidebar:
                         creds_q, *period_str,
                         progress_callback=_make_progress(2, "Ключевые слова"),
                     )
-                    save_quality_cache("keywords", kw, period_str)
+                    _save_and_sync("keywords", kw, period_str)
                     st.write(f"✅ Ключевые слова: {len(kw)} строк")
 
                     st_status.update(label="📥 [3/3] Объявления (креативы)…", state="running")
@@ -148,7 +177,7 @@ with st.sidebar:
                         creds_q, *period_str,
                         progress_callback=_make_progress(3, "Объявления"),
                     )
-                    save_quality_cache("ads_creatives", ad, period_str)
+                    _save_and_sync("ads_creatives", ad, period_str)
                     st.write(f"✅ Объявления: {len(ad)} строк")
 
                     st_status.update(label="✅ Все 3 отчёта загружены", state="complete")
@@ -235,7 +264,7 @@ if _cache_empty and _yd_creds_global and not _auto_failed:
                         auto_creds, *auto_period,
                         progress_callback=_make_auto_progress(i, label),
                     )
-                    save_quality_cache(kind, df, auto_period)
+                    _save_and_sync(kind, df, auto_period)
                     st.write(f"✅ {label}: {len(df)} строк")
                 except Exception as ex:
                     errors_summary.append((kind, str(ex)))
