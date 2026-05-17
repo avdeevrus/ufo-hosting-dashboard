@@ -2604,49 +2604,66 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
                 ), unsafe_allow_html=True)
 
             # ─── Таблица break-even forecast для неокупившихся когорт ─
+            # Новая модель: используем M.cohort_ltv_forecast (наблюдаемая
+            # динамика + decay 0.9 в месяц) для прогноза до M+24. Для каждой
+            # неокупившейся когорты ищем первый месяц, когда прогнозируемый
+            # LTV per client × число клиентов догонит расход на привлечение.
+            forecast_long = M.cohort_ltv_forecast(orders_all, horizon_months=24)
+
             not_paid_back = pb[pb["payback_month"].isna()].copy()
-            if not not_paid_back.empty:
-                # Для каждой неокупившейся когорты прикинем когда выйдет
-                # в плюс через линейную экстраполяцию по последним 3 точкам.
+            if not not_paid_back.empty and not forecast_long.empty:
                 forecast_be = []
                 for idx, row in not_paid_back.iterrows():
                     spend = row["ad_spend"]
-                    if spend <= 0:
+                    clients = row["clients"]
+                    if spend <= 0 or clients <= 0 or idx not in forecast_long.index:
                         continue
-                    observed_cum = [(int(c.replace("cum_M+", "")), row[c])
-                                    for c in rev_cols
-                                    if not pd.isna(row[c]) and row[c] > 0]
-                    if len(observed_cum) < 2:
-                        forecast_be.append({
-                            "cohort": idx, "current_pct": 0,
-                            "forecast_month": None, "verdict": "Мало данных"
-                        })
-                        continue
-                    last_pts = observed_cum[-3:]
-                    pcts = [(m, val / spend * 100) for m, val in last_pts]
-                    cur_month, cur_pct = pcts[-1]
-                    # slope: насколько % растёт за месяц
-                    first_month, first_pct = pcts[0]
-                    if cur_month == first_month:
-                        slope = 0
+
+                    target_per_client = spend / clients
+                    fc_row = forecast_long.loc[idx]
+
+                    # Текущий % возврата = max наблюдаемый
+                    observed_max = max(
+                        (row[c] / spend * 100 for c in rev_cols if not pd.isna(row[c])),
+                        default=0,
+                    )
+
+                    # Ищем первый M+k где прогноз LTV per client достигает target
+                    forecast_month = None
+                    for col in fc_row.index:
+                        if not col.startswith("M+"):
+                            continue
+                        k = int(col.replace("M+", ""))
+                        ltv_pc = fc_row[col]
+                        if pd.notna(ltv_pc) and ltv_pc >= target_per_client:
+                            forecast_month = k
+                            break
+
+                    # Последний наблюдаемый M для расчёта «через сколько мес отсюда»
+                    last_observed = max(
+                        (int(c.replace("cum_M+", "")) for c in rev_cols
+                         if not pd.isna(row[c]) and row[c] > 0),
+                        default=0,
+                    )
+
+                    if forecast_month is None:
+                        verdict = "⚠️ Не окупится за 24 мес — нужно ускорять привлечение"
+                    elif forecast_month <= last_observed:
+                        # На какой-то итерации forecast достиг target — но это
+                        # ретроспективное предсказание, на практике уже наблюдалось
+                        verdict = f"✅ Окупится в ближайший месяц (M+{forecast_month})"
                     else:
-                        slope = (cur_pct - first_pct) / (cur_month - first_month)
-                    if slope <= 0:
-                        verdict = "❌ Не окупится при текущей траектории"
-                        forecast_month = None
-                    else:
-                        remaining = 100 - cur_pct
-                        months_to_100 = remaining / slope
-                        forecast_month = cur_month + months_to_100
-                        if forecast_month > 60:
-                            verdict = f"⚠️ ~{forecast_month/12:.1f} года"
-                        elif forecast_month > 24:
-                            verdict = f"~{forecast_month:.0f} мес (≈ {forecast_month/12:.1f} года)"
+                        months_ahead = forecast_month - last_observed
+                        if forecast_month <= 12:
+                            verdict = f"✅ Через ~{months_ahead} мес (всего M+{forecast_month})"
+                        elif forecast_month <= 18:
+                            verdict = f"🟢 Через ~{months_ahead} мес (всего M+{forecast_month})"
                         else:
-                            verdict = f"✅ через ~{forecast_month - cur_month:.0f} мес (всего M+{forecast_month:.0f})"
+                            verdict = f"⚠️ Через ~{months_ahead} мес (всего M+{forecast_month})"
+
                     forecast_be.append({
                         "cohort": idx,
-                        "current_pct": cur_pct,
+                        "current_pct": observed_max,
                         "forecast_month": forecast_month,
                         "verdict": verdict,
                     })
@@ -2659,8 +2676,9 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
                     fc_df_show = fc_df[["Когорта", "Сейчас вернулось, %", "Прогноз окупаемости"]]
                     st.markdown(
                         '<div style="margin-top: 0.6rem; color:#57606a; font-size:0.85rem;">'
-                        '<b>Когорты, которые ещё не вышли в плюс</b> — прогноз через линейную '
-                        'экстраполяцию траектории возврата за последние 3 наблюдаемых месяца.'
+                        '<b>Когорты, которые ещё не вышли в плюс</b> — прогноз через '
+                        '<code>cohort_ltv_forecast</code> (наблюдаемая динамика на клиента '
+                        '+ декай 0.9 в месяц на горизонте 24 мес).'
                         '</div>',
                         unsafe_allow_html=True,
                     )
@@ -2676,8 +2694,9 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
             st.caption(
                 "📊 Прогноз остаточного LTV использует модель `cohort_ltv_forecast`: "
                 "наблюдаемая динамика доходов на клиента + экстраполяция «хвоста» "
-                "с decay 0.9 в месяц. Это нижняя граница — реальный LTV хостинга обычно "
-                "выше за счёт ежегодных продлений."
+                "с decay 0.9 в месяц. Это **нижняя граница** — реальный LTV хостинга "
+                "обычно выше за счёт ежегодных продлений (всплеск на M+12), которого "
+                "линейная модель не видит."
             )
 
 
