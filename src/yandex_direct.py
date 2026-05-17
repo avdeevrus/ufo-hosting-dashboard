@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -31,6 +32,117 @@ import requests
 
 
 REPORTS_URL = "https://api.direct.yandex.com/json/v5/reports"
+
+
+# ============================================================
+#              Глобальный rate limiter + retry
+# ============================================================
+#
+# Reports API: 20 запросов / 10 сек на метод. Превышение → ошибка 56.
+# Берём с запасом 15/10 — оставляет место для polling 201/202 без
+# выбивания лимита, когда параллельно тянутся 3 отчёта × N чанков.
+
+_REPORTS_RATE_MAX_CALLS = 15
+_REPORTS_RATE_WINDOW_SEC = 10.0
+_POST_MAX_RETRIES = 6
+
+
+class _SlidingWindowLimiter:
+    """Thread-safe sliding-window лимитер.
+
+    Гарантирует, что не более `max_calls` вызовов произойдёт за любое окно
+    в `window_seconds` секунд. Если лимит достигнут — блокирует до момента,
+    когда самый старый вызов «вытечет» из окна.
+    """
+
+    def __init__(self, max_calls: int, window_seconds: float):
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self._calls: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                cutoff = now - self.window
+                # Чистим устаревшие записи (старше окна)
+                self._calls = [t for t in self._calls if t > cutoff]
+                if len(self._calls) < self.max_calls:
+                    self._calls.append(now)
+                    return
+                # Лимит выбран — ждём пока самый старый «вытечет» + 50ms запас
+                wait = self._calls[0] + self.window - now + 0.05
+            time.sleep(max(0.05, wait))
+
+
+_REPORTS_LIMITER = _SlidingWindowLimiter(
+    max_calls=_REPORTS_RATE_MAX_CALLS,
+    window_seconds=_REPORTS_RATE_WINDOW_SEC,
+)
+
+
+def _parse_api_error_code(r: requests.Response):
+    """Достаёт error_code из JSON-ответа API. None если тела/кода нет."""
+    try:
+        r.encoding = "utf-8"
+        return r.json().get("error", {}).get("error_code")
+    except (ValueError, KeyError, AttributeError):
+        return None
+
+
+def _post_with_retry(body: dict, headers: dict, *,
+                     timeout: int = 90,
+                     max_retries: int = _POST_MAX_RETRIES) -> requests.Response:
+    """POST в Reports API с rate-limiting + retry на временные ошибки.
+
+    Retry на: ошибку 56 (rate limit), 152 (отчёт уже строится),
+    HTTP 429/5xx, сетевые таймауты/обрывы. Backoff экспоненциальный.
+    Возвращает финальный Response (включая успешные 200/201/202 и
+    не-retry-able ошибки — их разберёт вызывающий код).
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(max_retries):
+        _REPORTS_LIMITER.acquire()
+        try:
+            r = requests.post(REPORTS_URL, json=body, headers=headers, timeout=timeout)
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            last_exc = e
+            # Сетевой сбой → backoff и retry
+            time.sleep(min(30, 2 ** attempt + 1))
+            continue
+
+        # HTTP 429 Too Many Requests — Retry-After в секундах
+        if r.status_code == 429:
+            wait = int(r.headers.get("Retry-After", "11"))
+            time.sleep(max(wait, 11))
+            continue
+
+        # HTTP 5xx — серверная ошибка Яндекса, имеет смысл повторить
+        if 500 <= r.status_code < 600:
+            time.sleep(min(30, 2 ** attempt + 1))
+            continue
+
+        # Прикладные ошибки в JSON — смотрим error_code
+        if r.status_code >= 400:
+            code = _parse_api_error_code(r)
+            if code in (56, "56"):
+                # Превышен лимит метода — ждём окно (10 сек) + запас
+                time.sleep(_REPORTS_RATE_WINDOW_SEC + 1 + attempt)
+                continue
+            if code in (152, "152"):
+                # Отчёт уже строится — подождём и повторим
+                time.sleep(5 + 2 * attempt)
+                continue
+
+        return r
+
+    if last_exc is not None:
+        raise last_exc
+    # Если все попытки выбили один и тот же retry-able код → возвращаем
+    # последний ответ, _handle_api_error выдаст осмысленное сообщение
+    return r
 
 
 @dataclass
@@ -99,6 +211,12 @@ def _handle_api_error(r: requests.Response) -> None:
             msg += "\n→ Агентский аккаунт. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
         elif code in (152, "152"):
             msg += "\n→ Отчёт уже строится, попробуйте через минуту."
+        elif code in (56, "56"):
+            msg += (
+                "\n→ Превышен лимит частоты (20 req/10 sec). Все retry "
+                "(6 раз с backoff) уже выполнены — подождите 1-2 минуты "
+                "и нажмите «Подтянуть качество» ещё раз."
+            )
         elif code in (4001, "4001"):
             # Самая частая причина 4001 — DateFrom раньше «3 года от текущего месяца»
             msg += (
@@ -116,22 +234,25 @@ def _handle_api_error(r: requests.Response) -> None:
 
 
 def _fetch_report(creds: DirectCredentials, body: dict,
-                  max_wait_iters: int = 20) -> pd.DataFrame:
+                  max_wait_iters: int = 30) -> pd.DataFrame:
     """Generic: посылает body в Reports API, ждёт async-готовности и парсит TSV.
 
-    Reports API возвращает 201/202 пока отчёт строится; повторяем до max_wait_iters раз
-    с задержкой из заголовка retryIn. На 200 — парсим TSV.
+    Reports API возвращает 201/202 пока отчёт строится; повторяем до
+    max_wait_iters раз с задержкой из заголовка retryIn. На 200 — парсим TSV.
+
+    Все запросы идут через `_post_with_retry`, который соблюдает глобальный
+    rate limit (15 req / 10 sec) и сам ретраит ошибки 56/152/429/5xx/сетевые.
     """
     headers = _api_headers(creds)
     for _ in range(max_wait_iters):
-        r = requests.post(REPORTS_URL, json=body, headers=headers, timeout=60)
+        r = _post_with_retry(body, headers, timeout=90)
         if r.status_code in (201, 202):
             wait = int(r.headers.get("retryIn", "5"))
             time.sleep(wait)
             continue
         if r.status_code == 200:
             return pd.read_csv(io.StringIO(r.text), sep="\t")
-        if r.status_code >= 400 and r.status_code != 200:
+        if r.status_code >= 400:
             _handle_api_error(r)
         r.raise_for_status()
     raise TimeoutError("Не удалось получить отчёт Яндекс.Директ за разумное время")
@@ -175,14 +296,15 @@ def _fetch_chunked(creds: DirectCredentials,
                    report_type: str,
                    field_names: list[str],
                    date_from: str, date_to: str,
-                   *, max_workers: int = 5,
+                   *, max_workers: int = 3,
                    progress_callback=None) -> pd.DataFrame:
     """Тянет отчёт чанками по 90 дней ПАРАЛЛЕЛЬНО и склеивает в один DataFrame.
 
     Reports API асинхронный (201/202 пока строится → poll → 200 готово).
     Каждый чанк может занимать 10-60 секунд из-за polling. Если их 12+
-    и тянуть последовательно — это легко 5-10 минут. Параллельно с 5 потоками
-    сокращает в 4-5×.
+    и тянуть последовательно — это легко 5-10 минут. Параллельно с 3 потоками
+    (под глобальный rate limiter 15 req/10 sec) сокращает в 3×, не выбивая
+    лимит API 56.
 
     progress_callback(done: int, total: int) — вызывается при завершении
     каждого чанка (потокобезопасно через lock).
