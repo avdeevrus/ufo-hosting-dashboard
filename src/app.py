@@ -27,6 +27,63 @@ st.set_page_config(
 # Sys path для импортов из соседних модулей
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+
+# Совместимость со старыми ссылками: до фикса url_path страница «Качество
+# рекламы» имела URL /Качество_рекламы (URL-encoded кириллица). При заходе
+# по старой ссылке Streamlit показывает модал «Page not found» поверх
+# главной страницы. Перехватываем такие переходы JS-редиректом + скрываем
+# модал на случай если редирект не успел.
+_compat_js_and_css = """
+<style>
+/* Скрываем системный модал Streamlit «Page not found» — это безопасно,
+   потому что Streamlit и так автоматически открывает главную страницу. */
+div[role="dialog"]:has(h1) {
+    /* Не трогаем обычные модалы — таргетим только тот, где написан текст */
+}
+</style>
+<script>
+(() => {
+    try {
+        const win = window.parent || window;
+        const path = decodeURIComponent(win.location.pathname || '');
+        // Старые URL содержали кириллицу: «Качество рекламы», «Качество_рекламы» и т.п.
+        if (/[А-Яа-яЁё]/.test(path)) {
+            // Сохраняем query (?t=...) — нужен для persistent login
+            win.location.replace(win.location.origin + '/' + win.location.search);
+            return;
+        }
+    } catch (e) {}
+    // Если модал «Page not found» всё-таки появился — кликаем по крестику
+    const closeStaleModal = () => {
+        const docs = [document];
+        try { docs.push((window.parent || window).document); } catch (e) {}
+        for (const doc of docs) {
+            const dialogs = doc.querySelectorAll('div[role="dialog"]');
+            for (const d of dialogs) {
+                if ((d.innerText || '').includes('Page not found')) {
+                    const close = d.querySelector('button[aria-label="Close"], button[kind="header"]');
+                    if (close) close.click();
+                    else d.style.display = 'none';
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    // Запускаем сразу и наблюдаем за DOM на случай асинхронного появления
+    closeStaleModal();
+    const obs = new MutationObserver(() => closeStaleModal());
+    try { obs.observe(document.body, { childList: true, subtree: true }); } catch (e) {}
+    try {
+        const parentDoc = (window.parent || window).document;
+        if (parentDoc) obs.observe(parentDoc.body, { childList: true, subtree: true });
+    } catch (e) {}
+})();
+</script>
+"""
+import streamlit.components.v1 as components  # noqa: E402
+components.html(_compat_js_and_css, height=0)
+
 # Регистрируем страницы через st.navigation. ВАЖНО: pages/ директории
 # быть НЕ ДОЛЖНО — иначе Streamlit Cloud параллельно с явной навигацией
 # вытаскивает её автоматически и в сайдбаре появляется «app» + дубли.
