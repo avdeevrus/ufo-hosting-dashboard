@@ -102,6 +102,8 @@ def _post_with_retry(body: dict, headers: dict, *,
     не-retry-able ошибки — их разберёт вызывающий код).
     """
     last_exc: BaseException | None = None
+    r: requests.Response | None = None   # инициализация — иначе при всех
+                                         # сетевых сбоях получим UnboundLocalError
     for attempt in range(max_retries):
         _REPORTS_LIMITER.acquire()
         try:
@@ -138,10 +140,13 @@ def _post_with_retry(body: dict, headers: dict, *,
 
         return r
 
-    if last_exc is not None:
-        raise last_exc
-    # Если все попытки выбили один и тот же retry-able код → возвращаем
-    # последний ответ, _handle_api_error выдаст осмысленное сообщение
+    # Все попытки исчерпаны. Если r ни разу не присвоен (только сетевые
+    # сбои подряд) — поднимаем last_exc. Иначе возвращаем последний ответ
+    # для разбора в _handle_api_error.
+    if r is None:
+        raise last_exc if last_exc is not None else RuntimeError(
+            "Я.Директ API: нет ответа после всех попыток retry"
+        )
     return r
 
 

@@ -240,7 +240,13 @@ def fetch_funnel(creds: MetrikaCredentials,
     rows = []
     prev = None
     for stage, n in stages:
-        conv = (n / prev * 100) if prev else 100.0
+        # Защита от TypeError (prev=None для 1-го этапа) и от деления на 0.
+        # ВАЖНО: prev обновляем всегда, даже если n=0, иначе следующий
+        # этап считает % от ещё более раннего prev, что искажает воронку.
+        if prev is None or prev <= 0:
+            conv = 100.0 if prev is None else 0.0
+        else:
+            conv = n / prev * 100
         rows.append({"stage": stage, "users": n, "conv_from_prev_pct": conv})
-        prev = n if n > 0 else prev
+        prev = n
     return pd.DataFrame(rows)

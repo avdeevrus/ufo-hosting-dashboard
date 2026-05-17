@@ -38,73 +38,10 @@ except Exception as e:
 #                       Защита паролем
 # ============================================================
 
-import hashlib as _hashlib
-
-
-def _password_token(pwd: str) -> str:
-    """Хэш для URL-токена. SHA-256 + соль, первые 24 символа."""
-    salted = ("ufo-hosting-dashboard-2026:" + pwd).encode("utf-8")
-    return _hashlib.sha256(salted).hexdigest()[:24]
-
-
-def _check_password() -> bool:
-    """Password-gate с persistence через URL-token.
-
-    Если в Space Secrets нет APP_PASSWORD — приложение открыто всем (default).
-    Если есть — при первом входе пользователь вводит пароль; после успешного
-    ввода токен дописывается в URL (?t=<hash>), чтобы при следующем заходе
-    на ту же ссылку login пропускался автоматически.
-    Кнопка «Выйти» в сайдбаре сбрасывает session и убирает токен из URL.
-    """
-    expected = os.environ.get("APP_PASSWORD")
-    if not expected:
-        return True
-
-    expected_token = _password_token(expected)
-
-    # Уже залогинены в этой сессии
-    if st.session_state.get("auth_ok"):
-        return True
-
-    # Проверка persistent токена в URL
-    url_token = st.query_params.get("t")
-    if url_token == expected_token:
-        st.session_state["auth_ok"] = True
-        return True
-
-    # Login-экран
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] { display: none !important; }
-        .main .block-container { max-width: 420px !important; margin: 6rem auto !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <div style="text-align:center; margin-bottom:1.5rem;">
-            <h2 style="margin:0;">UFO Hosting</h2>
-            <div style="color:#57606a; font-size:0.9rem; margin-top:0.4rem;">Дашборд окупаемости рекламы</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    pwd = st.text_input("Пароль доступа", type="password", key="login_pwd")
-    remember = st.checkbox("Запомнить меня на этом устройстве", value=True, key="login_remember")
-    if pwd:
-        if pwd == expected:
-            st.session_state["auth_ok"] = True
-            if remember:
-                # Persistent токен в URL — при возврате по ссылке login пропускается
-                st.query_params["t"] = expected_token
-            st.rerun()
-        else:
-            st.error("Неверный пароль", icon="🔒")
-    st.caption("Доступ ограничен. Получите пароль у владельца дашборда.")
-    return False
-
+# Используем единую реализацию из _shared (раньше тут была копия —
+# при изменении одного нужно было синхронизировать второе; в _shared
+# дополнительно сохраняется persistent ?t= при навигации).
+from _shared import check_password as _check_password
 
 if not _check_password():
     st.stop()
@@ -2607,15 +2544,18 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
         )
 
         # Дальше — кривая и таблица по реальным когортам с клиентами.
-        # Если расход уже был, но клиенты ещё не появились — выходим
-        # (hero уже показан, остальное считать не из чего).
-        if pb.empty or not rev_cols:
+        # Если расход уже был, но клиенты ещё не появились — показываем
+        # info и пропускаем детали окупаемости (на пустом pb все циклы
+        # ниже корректно отработают на empty DataFrame).
+        # ВАЖНО: НЕ ставим st.stop() — он убивает рендер всей страницы
+        # (Pareto, Churn, Footer), а тут только локальный пропуск блока.
+        _skip_payback_details = pb.empty or not rev_cols
+        if _skip_payback_details:
             st.info(
                 "📭 По текущим месяцам с расходом ещё нет платящих клиентов в "
                 "когортах — кривая окупаемости появится, когда клиенты сделают "
                 "первые оплаты."
             )
-            st.stop()
 
         # ─── Payback Curve: средний % возврата по горизонту ────
         st.markdown(
@@ -2901,7 +2841,8 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
                 tooltip="С учётом прогнозируемого остаточного дохода: текущий возврат + остаточный = общий ожидаемый возврат на горизонте 12 месяцев.",
             ), unsafe_allow_html=True)
             # Среднее по новой эре — самый чистый ориентир
-            new_era_pb = pb[pd.to_datetime(pb.index) >= cutoff] if 'cutoff' in dir() else pd.DataFrame()
+            # `cutoff` всегда определён выше (cutoff = pd.Timestamp("2025-11-01"))
+            new_era_pb = pb[pd.to_datetime(pb.index) >= cutoff]
             if not new_era_pb.empty:
                 ne_residual_idx = new_era_pb.index.intersection(forecast_m12.index)
                 ne_residual = float(

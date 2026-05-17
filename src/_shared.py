@@ -258,6 +258,11 @@ QUALITY_CACHE_FILES = {
 
 
 def save_quality_cache(kind: str, df: pd.DataFrame, period: tuple) -> None:
+    if kind not in QUALITY_CACHE_FILES:
+        raise ValueError(
+            f"save_quality_cache: неизвестный kind={kind!r}. "
+            f"Поддерживаются: {', '.join(sorted(QUALITY_CACHE_FILES))}"
+        )
     QUALITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = QUALITY_CACHE_DIR / QUALITY_CACHE_FILES[kind]
     payload = {
@@ -271,6 +276,8 @@ def save_quality_cache(kind: str, df: pd.DataFrame, period: tuple) -> None:
 
 def load_quality_cache(kind: str) -> tuple[pd.DataFrame, dict]:
     """Возвращает (DataFrame, meta-info). Если файла нет — пустые объекты."""
+    if kind not in QUALITY_CACHE_FILES:
+        return pd.DataFrame(), {}
     path = QUALITY_CACHE_DIR / QUALITY_CACHE_FILES[kind]
     if not path.exists():
         return pd.DataFrame(), {}
