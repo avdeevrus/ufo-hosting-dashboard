@@ -236,19 +236,34 @@ def monthly_summary(orders: pd.DataFrame, ads: pd.DataFrame,
 
 def cohort_payback(orders: pd.DataFrame, ads: pd.DataFrame) -> pd.DataFrame:
     """Для каждой когорты регистрации: CAC и накопленный доход по месяцам.
-    Показывает, за сколько месяцев когорта окупила свою стоимость привлечения."""
-    cohort_rev = build_cohort_table(orders, basis="registration")
-    if cohort_rev.empty:
-        return pd.DataFrame()
-    cum = cohort_rev.cumsum(axis=1)
-    cum.columns = [f"cum_{c}" for c in cohort_rev.columns]
+    Показывает, за сколько месяцев когорта окупила свою стоимость привлечения.
 
-    sizes = cohort_client_counts(orders, basis="registration")
+    Индекс — объединение месяцев с расходом на Директ и месяцев с регистрациями
+    платящих клиентов. Если за месяц был расход, но ни один клиент не
+    зарегистрировался+оплатил — строка попадает с clients=0, чтобы суммарный
+    `ad_spend` совпадал с расходом на Директ в шапке (без «потерянных» месяцев).
+    """
+    cohort_rev = build_cohort_table(orders, basis="registration")
     spend_by_month = ads.groupby("month")["spend_rub"].sum() if not ads.empty else pd.Series(dtype=float)
 
+    if cohort_rev.empty and spend_by_month.empty:
+        return pd.DataFrame()
+
+    # Объединяем индексы: «вложено» = весь расход, а не только месяцы с когортами
+    all_months = sorted(set(cohort_rev.index) | set(spend_by_month.index))
+    if not cohort_rev.empty:
+        cohort_rev = cohort_rev.reindex(all_months, fill_value=0.0)
+        cum = cohort_rev.cumsum(axis=1)
+        cum.columns = [f"cum_{c}" for c in cohort_rev.columns]
+    else:
+        # Только расход без когорт — пустой кумулятив с одним столбцом M+0
+        cum = pd.DataFrame(0.0, index=all_months, columns=["cum_M+0"])
+
+    sizes = cohort_client_counts(orders, basis="registration")
+
     df = cum.copy()
-    df.insert(0, "clients", sizes.reindex(df.index).fillna(0).astype(int))
-    df.insert(1, "ad_spend", spend_by_month.reindex(df.index).fillna(0.0))
+    df.insert(0, "clients", sizes.reindex(all_months).fillna(0).astype(int))
+    df.insert(1, "ad_spend", spend_by_month.reindex(all_months).fillna(0.0))
     df.insert(2, "cac", np.where(df["clients"] > 0, df["ad_spend"] / df["clients"], np.nan))
 
     # месяц окупаемости
