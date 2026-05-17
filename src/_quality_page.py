@@ -452,6 +452,10 @@ qc4.markdown(kpi_card(
     "Конверсии (цели)", fmt_num(total_conv),
     f"CPL {fmt_rub(avg_cpl)}" if total_conv else "цели Метрики не зафиксированы",
     kind="green" if total_conv > 0 else "red",
+    tooltip="Достижения целей Я.Метрики, отмеченных как «Основные» в кампаниях Я.Директа "
+            "(обычно user_payment-paid — успешная оплата, или e_purchase — e-commerce покупка). "
+            "Это не клики, а реальные целевые действия после клика. "
+            "Какая именно цель учитывается — см. настройки каждой кампании в direct.yandex.ru.",
 ), unsafe_allow_html=True)
 
 
@@ -647,17 +651,28 @@ else:
         },
         "rowHeight": 32,         # компактнее
         "headerHeight": 36,
+        # headerTooltip — при наведении на заголовок колонки в AgGrid
+        # показывается подсказка. Объясняем что именно показывает каждая метрика.
         "columnDefs": [
             {"field": "level", "headerName": "Тип", "hide": True},
-            {"field": "impressions",    "headerName": "Показы",  "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  95},
-            {"field": "clicks",         "headerName": "Клики",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  85},
-            {"field": "ctr",            "headerName": "CTR",     "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75},
-            {"field": "spend_rub",      "headerName": "Расход",  "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 115, "flex": 1.3},
-            {"field": "avg_cpc",        "headerName": "CPC",     "valueFormatter": fmt_cpc,   "type": "numericColumn", "minWidth":  85},
-            {"field": "conversions",    "headerName": "Конв.",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  75},
-            {"field": "conversion_rate","headerName": "CR",      "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75},
-            {"field": "cpl",            "headerName": "CPL",     "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 100},
-            {"field": "bounce_rate",    "headerName": "Отказы",  "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  80},
+            {"field": "impressions",    "headerName": "Показы",  "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  95,
+             "headerTooltip": "Сколько раз объявление было показано пользователям в поиске или РСЯ."},
+            {"field": "clicks",         "headerName": "Клики",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  85,
+             "headerTooltip": "Сколько раз пользователи кликнули по объявлению и перешли на сайт."},
+            {"field": "ctr",            "headerName": "CTR",     "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75,
+             "headerTooltip": "Click-Through Rate = клики / показы × 100%. Кликабельность объявления. Для поиска норма 5-15%, для РСЯ 0.3-1%."},
+            {"field": "spend_rub",      "headerName": "Расход",  "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 115, "flex": 1.3,
+             "headerTooltip": "Сумма списаний за клики в Я.Директе (с НДС)."},
+            {"field": "avg_cpc",        "headerName": "CPC",     "valueFormatter": fmt_cpc,   "type": "numericColumn", "minWidth":  85,
+             "headerTooltip": "Cost Per Click = расход / клики. Средняя цена клика."},
+            {"field": "conversions",    "headerName": "Конв.",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  75,
+             "headerTooltip": "Достижения целей Я.Метрики, отмеченных как ОСНОВНЫЕ в настройках кампании Я.Директа. В UFO Hosting обычно это user_payment-paid (успешная оплата) и/или e_purchase. Не путать с кликами — конверсия = клиент сделал целевое действие."},
+            {"field": "conversion_rate","headerName": "CR",      "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75,
+             "headerTooltip": "Conversion Rate = конверсии / клики × 100%. Какая доля кликнувших дошла до целевого действия. >5% хорошо, <1% плохо."},
+            {"field": "cpl",            "headerName": "CPL",     "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 100,
+             "headerTooltip": "Cost Per Lead = расход / конверсии. Сколько стоит привлечь 1 клиента, который сделал целевое действие. Чем меньше — тем эффективнее."},
+            {"field": "bounce_rate",    "headerName": "Отказы",  "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  80,
+             "headerTooltip": "% визитов длительностью <15 секунд (одна страница, без действий). >40% — плохо (нерелевантные клики). <20% — хорошо."},
         ],
     }
 
@@ -672,4 +687,29 @@ else:
         theme="streamlit",
         fit_columns_on_grid_load=True,
     )
+
+    # ─── Легенда: расшифровка колонок ─────────────────────────
+    with st.expander("ℹ️ Что означают колонки таблицы", expanded=False):
+        st.markdown(
+            """
+| Колонка | Что значит | Норма / Что хорошо |
+|---|---|---|
+| **Показы** | Сколько раз объявление показано пользователям в поиске или в РСЯ. | Чем больше — тем выше охват |
+| **Клики** | Сколько раз пользователи кликнули по объявлению. | Не критично само по себе — важна стоимость и качество кликов |
+| **CTR** | Click-Through Rate = клики ÷ показы × 100%. Кликабельность объявления. | Поиск: **5–15%** хорошо · РСЯ: **0.3–1%** хорошо |
+| **Расход** | Сумма списаний в Я.Директе за клики (с НДС). | — |
+| **CPC** | Cost Per Click = расход ÷ клики. Средняя цена клика. | Чем ниже — тем дешевле трафик |
+| **Конв.** | Достижения **целей Я.Метрики**, отмеченных как «**Основные**» в кампании Я.Директа. В UFO Hosting это обычно `user_payment-paid` (успешная оплата) или `e_purchase` (e-commerce покупка) — какая из 24 целей подключена, видно в настройках кампании Я.Директа. **Это не клики — это сколько клиентов сделали целевое действие после клика.** | Чем больше — тем эффективнее реклама приводит к деньгам |
+| **CR** | Conversion Rate = конверсии ÷ клики × 100%. Какая доля кликнувших дошла до целевого действия (оплаты/регистрации). | **> 5%** хорошо · **1–5%** норма · **< 1%** плохо |
+| **CPL** | Cost Per Lead = расход ÷ конверсии. Сколько стоит привлечь 1 клиента, который выполнил цель. | Сравнивайте с реальным ARPU клиента (доход на клиента). Если CPL > LTV — кампания убыточная |
+| **Отказы** | % визитов длительностью < 15 секунд (одна страница без действий). | **< 20%** хорошо · **20–40%** средне · **> 40%** плохо (нерелевантные клики) |
+            """
+        )
+        st.caption(
+            "💡 Какая именно цель в Я.Метрике считается «конверсией» — настраивается "
+            "в каждой кампании Я.Директа отдельно: **direct.yandex.ru → кампания → "
+            "Стратегия → Цели**. Если несколько целей выбрано — Конв. суммирует "
+            "их достижения. Список всех целей UFO Hosting (24 шт) — в "
+            "metrika.yandex.ru → Настройка → Цели."
+        )
 
