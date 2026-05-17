@@ -2527,6 +2527,159 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
                     unsafe_allow_html=True,
                 )
 
+        # ─── Прогноз окупаемости на 12 мес ─────────────────────
+        # Используем cohort_ltv_forecast (есть в metrics.py): прогноз
+        # кумулятивного дохода per client на M+12. Для каждой когорты
+        # считаем «остаточный доход» = forecast_M12 - max_observed_revenue.
+        # Суммируем по всем когортам → сколько ещё принесут уже
+        # привлечённые клиенты в ближайшие 12 мес.
+
+        fc = M.cohort_ltv_forecast(orders_all, horizon_months=12)
+        if not fc.empty:
+            # current = max observed revenue per client для каждой когорты
+            cohort_rev_obs = M.build_cohort_table(orders_all, basis="registration")
+            sizes_obs = M.cohort_client_counts(orders_all, basis="registration")
+
+            # Кумулятив фактического дохода / клиент
+            cum_obs = cohort_rev_obs.cumsum(axis=1)
+            rev_per_client_obs = cum_obs.div(sizes_obs.reindex(cum_obs.index).replace(0, pd.NA), axis=0)
+            # Максимум наблюдаемого LTV per client для каждой когорты
+            current_ltv = rev_per_client_obs.max(axis=1).fillna(0)
+            # Прогноз LTV per client на M+12
+            forecast_m12 = fc.iloc[:, -1] if not fc.empty else pd.Series(dtype=float)
+            # Общие клиенты в каждой когорте (только те, что в pb — у нас есть и расход)
+            clients_in_pb = pb["clients"]
+            # Остаточный LTV per cohort = (forecast_M12 - current) × clients
+            common_idx = clients_in_pb.index.intersection(forecast_m12.index)
+            residual_per_client = (forecast_m12.reindex(common_idx) - current_ltv.reindex(common_idx)).clip(lower=0)
+            residual_total = float((residual_per_client * clients_in_pb.reindex(common_idx)).sum())
+
+            # Общий прогнозный возврат через 12 мес = текущий возврат + остаточный
+            forecast_total_return = observed_return + residual_total
+            forecast_return_pct = (forecast_total_return / total_spend_all * 100) if total_spend_all else 0
+
+            st.markdown(
+                '<div class="section-title">Прогноз окупаемости на 12 месяцев</div>',
+                unsafe_allow_html=True,
+            )
+
+            fc_col1, fc_col2, fc_col3 = st.columns(3)
+            fc_col1.markdown(kpi_card(
+                "Остаточный LTV",
+                fmt_rub(residual_total),
+                f"уже привлечённые клиенты принесут в ближайшие 12 мес",
+                kind="green",
+                tooltip="Прогноз: сколько ещё денег принесут клиенты, уже привлечённые на сегодня, за следующие 12 месяцев. Считается как (прогноз LTV на M+12 минус то, что уже получили) × клиенты в когорте.",
+            ), unsafe_allow_html=True)
+            forecast_kind = "green" if forecast_return_pct >= 100 else "orange" if forecast_return_pct >= 50 else "red"
+            fc_col2.markdown(kpi_card(
+                "Полная окупаемость через 12 мес",
+                f"{forecast_return_pct:.1f}%",
+                f"{fmt_rub(forecast_total_return)} из {fmt_rub(total_spend_all)} вложенного",
+                kind=forecast_kind,
+                tooltip="С учётом прогнозируемого остаточного дохода: текущий возврат + остаточный = общий ожидаемый возврат на горизонте 12 месяцев.",
+            ), unsafe_allow_html=True)
+            # Среднее по новой эре — самый чистый ориентир
+            new_era_pb = pb[pd.to_datetime(pb.index) >= cutoff] if 'cutoff' in dir() else pd.DataFrame()
+            if not new_era_pb.empty:
+                ne_residual_idx = new_era_pb.index.intersection(forecast_m12.index)
+                ne_residual = float(
+                    ((forecast_m12.reindex(ne_residual_idx) - current_ltv.reindex(ne_residual_idx)).clip(lower=0)
+                     * new_era_pb["clients"].reindex(ne_residual_idx)).sum()
+                )
+                ne_observed = float(
+                    sum(row[rev_cols].max() if not pd.isna(row[rev_cols].max()) else 0
+                        for _, row in new_era_pb.iterrows())
+                )
+                ne_spend = float(new_era_pb["ad_spend"].sum())
+                ne_total = ne_observed + ne_residual
+                ne_pct = (ne_total / ne_spend * 100) if ne_spend else 0
+                ne_kind = "green" if ne_pct >= 100 else "orange" if ne_pct >= 50 else "red"
+                fc_col3.markdown(kpi_card(
+                    "Только новый аккаунт",
+                    f"{ne_pct:.1f}%",
+                    f"прогноз ROMI на 12 мес (с 11.2025)",
+                    kind=ne_kind,
+                    tooltip="То же самое, но только для новой эры Я.Директа (с ноября 2025). Это релевантный прогноз — на каких параметрах сейчас работает реклама.",
+                ), unsafe_allow_html=True)
+
+            # ─── Таблица break-even forecast для неокупившихся когорт ─
+            not_paid_back = pb[pb["payback_month"].isna()].copy()
+            if not not_paid_back.empty:
+                # Для каждой неокупившейся когорты прикинем когда выйдет
+                # в плюс через линейную экстраполяцию по последним 3 точкам.
+                forecast_be = []
+                for idx, row in not_paid_back.iterrows():
+                    spend = row["ad_spend"]
+                    if spend <= 0:
+                        continue
+                    observed_cum = [(int(c.replace("cum_M+", "")), row[c])
+                                    for c in rev_cols
+                                    if not pd.isna(row[c]) and row[c] > 0]
+                    if len(observed_cum) < 2:
+                        forecast_be.append({
+                            "cohort": idx, "current_pct": 0,
+                            "forecast_month": None, "verdict": "Мало данных"
+                        })
+                        continue
+                    last_pts = observed_cum[-3:]
+                    pcts = [(m, val / spend * 100) for m, val in last_pts]
+                    cur_month, cur_pct = pcts[-1]
+                    # slope: насколько % растёт за месяц
+                    first_month, first_pct = pcts[0]
+                    if cur_month == first_month:
+                        slope = 0
+                    else:
+                        slope = (cur_pct - first_pct) / (cur_month - first_month)
+                    if slope <= 0:
+                        verdict = "❌ Не окупится при текущей траектории"
+                        forecast_month = None
+                    else:
+                        remaining = 100 - cur_pct
+                        months_to_100 = remaining / slope
+                        forecast_month = cur_month + months_to_100
+                        if forecast_month > 60:
+                            verdict = f"⚠️ ~{forecast_month/12:.1f} года"
+                        elif forecast_month > 24:
+                            verdict = f"~{forecast_month:.0f} мес (≈ {forecast_month/12:.1f} года)"
+                        else:
+                            verdict = f"✅ через ~{forecast_month - cur_month:.0f} мес (всего M+{forecast_month:.0f})"
+                    forecast_be.append({
+                        "cohort": idx,
+                        "current_pct": cur_pct,
+                        "forecast_month": forecast_month,
+                        "verdict": verdict,
+                    })
+
+                if forecast_be:
+                    fc_df = pd.DataFrame(forecast_be)
+                    fc_df["Когорта"] = fc_df["cohort"].apply(lambda d: fmt_month_ru(d, "short_year"))
+                    fc_df["Сейчас вернулось, %"] = fc_df["current_pct"].round(1)
+                    fc_df["Прогноз окупаемости"] = fc_df["verdict"]
+                    fc_df_show = fc_df[["Когорта", "Сейчас вернулось, %", "Прогноз окупаемости"]]
+                    st.markdown(
+                        '<div style="margin-top: 0.6rem; color:#57606a; font-size:0.85rem;">'
+                        '<b>Когорты, которые ещё не вышли в плюс</b> — прогноз через линейную '
+                        'экстраполяцию траектории возврата за последние 3 наблюдаемых месяца.'
+                        '</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        fc_df_show, use_container_width=True, hide_index=True,
+                        column_config={
+                            "Сейчас вернулось, %": st.column_config.ProgressColumn(
+                                format="%.1f%%", min_value=0, max_value=100,
+                            ),
+                        },
+                    )
+
+            st.caption(
+                "📊 Прогноз остаточного LTV использует модель `cohort_ltv_forecast`: "
+                "наблюдаемая динамика доходов на клиента + экстраполяция «хвоста» "
+                "с decay 0.9 в месяц. Это нижняя граница — реальный LTV хостинга обычно "
+                "выше за счёт ежегодных продлений."
+            )
+
 
 # ============================================================
 #                       Детали (свёрнутые)
