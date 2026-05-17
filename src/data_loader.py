@@ -154,6 +154,28 @@ def load_orders(extra_files=None) -> pd.DataFrame:
     out["is_paid"] = out["payment_status"].str.strip().str.lower().eq("оплачен")
     out["payment_month"] = out["payment_date"].dt.to_period("M").dt.to_timestamp()
     out["registration_month"] = out["registration_date"].dt.to_period("M").dt.to_timestamp()
+
+    # Сквозная аналитика: UTM-метки и идентификаторы атрибуции.
+    # Колонки опциональны — если в CSV их нет, заполняем пустыми строками
+    # (старые выгрузки продолжат работать). После доработки админки
+    # UFO Hosting (см. docs/integration/) колонки появятся автоматически.
+    attribution_columns = {
+        "utm_source":         ("utm_source",        "UTM Source"),
+        "utm_medium":         ("utm_medium",        "UTM Medium"),
+        "utm_campaign":       ("utm_campaign",      "UTM Campaign"),
+        "utm_content":        ("utm_content",       "UTM Content"),
+        "utm_term":           ("utm_term",          "UTM Term"),
+        "yclid":              ("yclid",             "YCLID"),
+        "metrika_client_id":  ("metrika_client_id", "Metrika ClientID"),
+    }
+    for out_col, raw_cols in attribution_columns.items():
+        value = ""
+        for rc in raw_cols:
+            if rc in raw.columns:
+                value = raw[rc].fillna("").astype(str)
+                break
+        out[out_col] = value if isinstance(value, pd.Series) else ""
+
     return out
 
 
