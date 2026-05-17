@@ -150,3 +150,80 @@ def test_cohort_payback_only_spend_no_orders():
     assert not pb.empty
     assert pb["ad_spend"].sum() == 3000.0
     assert (pb["clients"] == 0).all()
+
+
+def test_has_attribution_false_without_utm():
+    """Если в orders нет колонки utm_campaign — has_attribution = False."""
+    assert M.has_attribution(make_orders()) is False
+
+
+def test_has_attribution_false_when_utm_all_empty():
+    """Колонка есть, но все значения пустые — has_attribution = False."""
+    o = make_orders()
+    o["utm_campaign"] = ""
+    assert M.has_attribution(o) is False
+
+
+def test_has_attribution_true_when_at_least_one_utm():
+    o = make_orders()
+    o["utm_campaign"] = ["Поиск vps", "", "", ""]
+    assert M.has_attribution(o) is True
+
+
+def test_roi_by_campaign_basic():
+    """Доход атрибутируется к utm_campaign, расход — к ads.campaign."""
+    o = make_orders()
+    # Все клиенты пришли с одной кампании «Поиск vps»; одна оплата без UTM
+    o["utm_campaign"] = ["Поиск vps", "Поиск vps", "Поиск vps", ""]
+    o["utm_source"] = ["yandex", "yandex", "yandex", ""]
+    o["utm_term"] = ["купить vps", "хостинг", "vps дешево", ""]
+
+    ads = pd.DataFrame({
+        "month":     pd.to_datetime(["2026-03-01", "2026-04-01"]),
+        "campaign":  ["Поиск vps", "МК тест"],
+        "spend_rub": [1000.0, 2000.0],
+    })
+
+    roi = M.roi_by_campaign(o, ads)
+    assert not roi.empty
+    # Должны быть строки для обеих кампаний (outer merge)
+    campaigns = set(roi["campaign"])
+    assert "Поиск vps" in campaigns
+    assert "МК тест" in campaigns
+    # «Поиск vps» — есть и доход и расход
+    poisk = roi[roi["campaign"] == "Поиск vps"].iloc[0]
+    assert poisk["revenue"] == 4500  # 1000+2000+1500 (3 paid с этой UTM)
+    assert poisk["spend_rub"] == 1000
+    assert abs(poisk["romi_pct"] - 350.0) < 0.1  # (4500-1000)/1000*100 = 350%
+    # «МК тест» — только расход, нет оплат → revenue=0, romi отрицательный
+    mk = roi[roi["campaign"] == "МК тест"].iloc[0]
+    assert mk["revenue"] == 0
+    assert mk["spend_rub"] == 2000
+
+
+def test_roi_by_campaign_empty_without_utm():
+    """Без utm_campaign roi_by_campaign возвращает пустой DataFrame."""
+    roi = M.roi_by_campaign(make_orders(), make_ads())
+    assert roi.empty
+
+
+def test_roi_by_keyword_basic():
+    """utm_term склеивается с criterion из keyword-отчёта."""
+    o = make_orders()
+    o["utm_campaign"] = ["Поиск vps"] * 3 + [""]
+    o["utm_term"] = ["купить vps", "хостинг", "купить vps", ""]
+
+    kw = pd.DataFrame({
+        "campaign":  ["Поиск vps"] * 2,
+        "criterion": ["купить vps", "хостинг"],
+        "spend_rub": [500.0, 300.0],
+        "clicks":    [100, 50],
+    })
+
+    roi = M.roi_by_keyword(o, kw)
+    assert not roi.empty
+    # «купить vps» — 2 оплаты (1000+1500) против 500 расхода → ROMI 400%
+    kv = roi[roi["criterion"] == "купить vps"].iloc[0]
+    assert kv["revenue"] == 2500
+    assert kv["spend_rub"] == 500
+    assert abs(kv["romi_pct"] - 400.0) < 0.1

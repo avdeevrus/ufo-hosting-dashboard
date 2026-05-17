@@ -679,3 +679,101 @@ def pareto_summary(orders: pd.DataFrame) -> dict:
         out[f"{seg}_share_clients"] = len(sub) / total_clients * 100 if total_clients else 0
         out[f"{seg}_share_revenue"] = sub["total_paid"].sum() / total_revenue * 100 if total_revenue else 0
     return out
+
+
+# ---------- Сквозная аналитика по UTM (per кампания/ключ) ----
+
+def has_attribution(orders: pd.DataFrame) -> bool:
+    """True если в выгрузке есть осмысленные UTM-метки. Используется
+    чтобы UI показывал блок «Сквозная аналитика» только когда данные
+    подгружены (после доработки админки UFO Hosting)."""
+    if orders.empty or "utm_campaign" not in orders.columns:
+        return False
+    return bool((orders["utm_campaign"].astype(str).str.strip() != "").any())
+
+
+def roi_by_campaign(orders: pd.DataFrame, ads: pd.DataFrame) -> pd.DataFrame:
+    """Атрибуция дохода по utm_campaign + расход по campaign из ads.
+
+    Чтобы доход и расход «склеились», в Я.Директе UTM-метка
+    {campaign_name} должна совпадать с именем кампании. Если есть
+    рассинхрон — таблица покажет отдельные строки (нет в ads / нет
+    в orders), что само по себе ценный диагностический сигнал.
+    """
+    if not has_attribution(orders):
+        return pd.DataFrame()
+    paid = _paid(orders)
+    if paid.empty:
+        return pd.DataFrame()
+
+    rev = (paid[paid["utm_campaign"].astype(str).str.strip() != ""]
+           .groupby("utm_campaign")
+           .agg(revenue=("payment_amount", "sum"),
+                orders=("order_id", "count"),
+                clients=("client_key", "nunique"))
+           .reset_index()
+           .rename(columns={"utm_campaign": "campaign"}))
+
+    spend = (ads.groupby("campaign")["spend_rub"].sum().reset_index()
+             if not ads.empty else pd.DataFrame(columns=["campaign", "spend_rub"]))
+
+    merged = pd.merge(rev, spend, on="campaign", how="outer")
+    merged["revenue"] = merged["revenue"].fillna(0)
+    merged["spend_rub"] = merged["spend_rub"].fillna(0)
+    merged["orders"] = merged["orders"].fillna(0).astype(int)
+    merged["clients"] = merged["clients"].fillna(0).astype(int)
+    merged["romi_pct"] = np.where(
+        merged["spend_rub"] > 0,
+        (merged["revenue"] - merged["spend_rub"]) / merged["spend_rub"] * 100,
+        np.nan,
+    )
+    merged["cac"] = np.where(merged["clients"] > 0, merged["spend_rub"] / merged["clients"], np.nan)
+    merged["arpu"] = np.where(merged["clients"] > 0, merged["revenue"] / merged["clients"], np.nan)
+    return merged.sort_values("spend_rub", ascending=False).reset_index(drop=True)
+
+
+def roi_by_keyword(orders: pd.DataFrame, keyword_quality: pd.DataFrame) -> pd.DataFrame:
+    """Атрибуция дохода по utm_term + расход из keyword-отчёта Я.Директа.
+
+    keyword_quality — DataFrame из cache yd_keywords.json (campaign,
+    criterion, impressions, clicks, spend_rub). Match по utm_term ↔ criterion.
+    """
+    if not has_attribution(orders):
+        return pd.DataFrame()
+    paid = _paid(orders)
+    if paid.empty or "utm_term" not in paid.columns:
+        return pd.DataFrame()
+
+    rev = (paid[paid["utm_term"].astype(str).str.strip() != ""]
+           .groupby("utm_term")
+           .agg(revenue=("payment_amount", "sum"),
+                orders=("order_id", "count"),
+                clients=("client_key", "nunique"))
+           .reset_index()
+           .rename(columns={"utm_term": "criterion"}))
+
+    if keyword_quality is None or keyword_quality.empty:
+        rev["spend_rub"] = 0.0
+        rev["clicks"] = 0
+        rev["romi_pct"] = np.nan
+        rev["cac"] = np.nan
+        return rev.sort_values("revenue", ascending=False).reset_index(drop=True)
+
+    spend = (keyword_quality.groupby("criterion")
+             .agg(spend_rub=("spend_rub", "sum"),
+                  clicks=("clicks", "sum"))
+             .reset_index())
+
+    merged = pd.merge(rev, spend, on="criterion", how="outer")
+    merged["revenue"] = merged["revenue"].fillna(0)
+    merged["spend_rub"] = merged["spend_rub"].fillna(0)
+    merged["clicks"] = merged["clicks"].fillna(0).astype(int)
+    merged["orders"] = merged["orders"].fillna(0).astype(int)
+    merged["clients"] = merged["clients"].fillna(0).astype(int)
+    merged["romi_pct"] = np.where(
+        merged["spend_rub"] > 0,
+        (merged["revenue"] - merged["spend_rub"]) / merged["spend_rub"] * 100,
+        np.nan,
+    )
+    merged["cac"] = np.where(merged["clients"] > 0, merged["spend_rub"] / merged["clients"], np.nan)
+    return merged.sort_values("spend_rub", ascending=False).reset_index(drop=True)
