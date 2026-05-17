@@ -76,14 +76,20 @@ with st.sidebar:
             "Кэширует CTR/CPC/конверсии по кампаниям, ключевикам и "
             "объявлениям. Не запрашивает повторно."
         )
-        # «За всё время» по умолчанию — собираем всю историю кампаний
-        # UFO Hosting начал Я.Директ летом 2025; 2023-01-01 = безопасная нижняя граница.
+        # API Я.Директа отдаёт максимум за последние 3 года от текущего месяца.
+        # Считаем динамически: первый день месяца «3 года назад» — самый
+        # широкий валидный диапазон.
+        _api_min = (pd.Timestamp.today().replace(day=1) - pd.DateOffset(years=3))
         q_from = st.date_input(
             "С даты",
-            value=pd.Timestamp("2023-01-01"),
+            value=_api_min,
+            min_value=_api_min,
             key="yd_quality_from",
             format="DD.MM.YYYY",
-            help="По умолчанию — с 1 января 2023 (вся история). Можно сузить если нужно.",
+            help=(
+                f"API Я.Директа отдаёт статистику не ранее "
+                f"{_api_min:%d.%m.%Y} (3 года от текущего месяца)."
+            ),
         )
         q_to = st.date_input(
             "По дату",
@@ -161,8 +167,12 @@ _cache_empty = _q_camp.empty and _q_kw.empty and _q_ad.empty
 _auto_failed = st.session_state.get("yd_quality_auto_failed", False)
 
 if _cache_empty and _yd_creds_global and not _auto_failed:
-    auto_from = "2023-01-01"
-    auto_to = pd.Timestamp.today().strftime("%Y-%m-%d")
+    # API Я.Директа: статистика только за последние 3 года от текущего месяца.
+    # Берём первый день месяца «3 года назад» — максимально широкий валидный
+    # диапазон. Жёсткая дата «2023-01-01» сломалась после 2026-04-30.
+    _today = pd.Timestamp.today().normalize()
+    auto_from = (_today.replace(day=1) - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    auto_to = _today.strftime("%Y-%m-%d")
     auto_period = (auto_from, auto_to)
 
     # st.status — поэтапный progress: пользователь видит что именно тянется,

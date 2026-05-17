@@ -13,7 +13,7 @@
 Поддерживаемые отчёты:
   - CAMPAIGN_PERFORMANCE_REPORT   — расход + базовые метрики по кампаниям
   - CAMPAIGN_QUALITY_REPORT       — расширенный (CTR/CPC/Conv/Bounce)
-  - KEYWORD_PERFORMANCE_REPORT    — ключевые слова
+  - CRITERIA_PERFORMANCE_REPORT   — ключевые слова / критерии таргетинга
   - AD_PERFORMANCE_REPORT         — объявления (креативы)
 
 Без токена модуль не делает запросов — UI просто покажет, что нет подключения.
@@ -99,6 +99,17 @@ def _handle_api_error(r: requests.Response) -> None:
             msg += "\n→ Агентский аккаунт. Добавьте YANDEX_DIRECT_CLIENT_LOGIN в Space Secrets."
         elif code in (152, "152"):
             msg += "\n→ Отчёт уже строится, попробуйте через минуту."
+        elif code in (4001, "4001"):
+            # Самая частая причина 4001 — DateFrom раньше «3 года от текущего месяца»
+            msg += (
+                "\n→ API отдаёт статистику только за последние 3 года от текущего месяца. "
+                "Уменьшите «С даты» в сайдбаре до значения не ранее этого ограничения."
+            )
+        elif code in (8000, "8000"):
+            msg += (
+                "\n→ Некорректный запрос (например, неверный ReportType или поля). "
+                "Если ошибка повторяется — пришлите её Claude, он адаптирует код."
+            )
         raise RuntimeError(msg)
     except (ValueError, KeyError):
         raise RuntimeError(f"Я.Директ API HTTP {r.status_code}: {r.text[:400]}")
@@ -312,12 +323,14 @@ def fetch_keyword_report(creds: DirectCredentials,
                          date_to: str) -> pd.DataFrame:
     """Отчёт по ключевым словам за период. Агрегат, без разреза по дням.
 
-    Reports API имеет лимит 92 дня для KEYWORD_PERFORMANCE_REPORT,
-    поэтому за период > 92 дней тянем чанками по 90 дней и склеиваем —
-    затем агрегируем по (campaign, ad_group, criterion, match_type)
-    чтобы пользователь видел сводку за весь период.
+    В Reports API правильное имя отчёта для ключевиков —
+    CRITERIA_PERFORMANCE_REPORT (KEYWORD_PERFORMANCE_REPORT не существует
+    и вызывает ошибку 8000 «ReportType содержит неверное значение»).
+
+    Reports API имеет лимит 92 дня для большинства отчётов — тянем
+    чанками по 90 дней, агрегируем по (campaign, ad_group, criterion, match_type).
     """
-    df = _fetch_chunked(creds, "KEYWORD_PERFORMANCE_REPORT",
+    df = _fetch_chunked(creds, "CRITERIA_PERFORMANCE_REPORT",
                         KEYWORD_REPORT_FIELDS, date_from, date_to)
     if df.empty:
         return df
