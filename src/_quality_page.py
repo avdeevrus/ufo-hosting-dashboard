@@ -19,7 +19,11 @@ st.set_page_config(
     page_title="UFO Hosting · Качество рекламы",
     page_icon="🎯",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # Сайдбар свёрнут по умолчанию — иначе он съедает 280px ширины
+    # и большая treetable не помещается в один экран. Параметры
+    # выгрузки (даты, кнопка «Подтянуть качество») переехали наверх
+    # страницы. Сайдбар оставляем только для «Сбросить кэш / Выйти».
+    initial_sidebar_state="collapsed",
 )
 
 # Импорты общих helpers
@@ -87,28 +91,41 @@ st.markdown(
 )
 
 
-# ─── Sidebar: синхронизация качества ──────────────────────────
+# ─── Sidebar: только сервисные действия ───────────────────────
+# Параметры выгрузки (даты + кнопка «Подтянуть качество») переехали
+# наверх страницы, чтобы освободить ширину под treetable. В сайдбар
+# (свёрнут по умолчанию) — только «Сбросить кэш» и «Выйти».
 with st.sidebar:
-    st.markdown("### 🎯 Аналитика рекламы")
-    st.caption("Для маркетинга. Главный дашборд → в навигации выше.")
+    st.markdown("### ⚙️ Сервис")
+    st.caption("Параметры выгрузки — в шапке страницы.")
     st.divider()
+    render_cache_reset_button(key_prefix="quality")
+    if os.environ.get("APP_PASSWORD"):
+        st.divider()
+        if st.button("🚪 Выйти", use_container_width=True, key="logout_btn",
+                     help="Сбросить вход на этом устройстве."):
+            st.session_state.pop("auth_ok", None)
+            st.query_params.clear()
+            st.rerun()
 
-    _yd_creds_global = yd_creds()
-    if not _yd_creds_global:
-        st.warning(
-            "API Яндекс.Директа не подключён. "
-            "Добавьте `YANDEX_DIRECT_TOKEN` в Secrets.",
-            icon="🔑",
-        )
-    else:
-        st.caption(
-            "Кэширует CTR/CPC/конверсии по кампаниям, ключевикам и "
-            "объявлениям. Не запрашивает повторно."
-        )
-        # API Я.Директа отдаёт максимум за последние 3 года от текущего месяца.
-        # Считаем динамически: первый день месяца «3 года назад» — самый
-        # широкий валидный диапазон.
-        _api_min = (pd.Timestamp.today().replace(day=1) - pd.DateOffset(years=3))
+
+# ─── Топбар: даты + кнопка Подтянуть качество ─────────────────
+# Горизонтальный блок над таблицей. Заменяет старый сайдбар.
+_yd_creds_global = yd_creds()
+_api_min = (pd.Timestamp.today().replace(day=1) - pd.DateOffset(years=3))
+
+if not _yd_creds_global:
+    st.warning(
+        "API Яндекс.Директа не подключён. "
+        "Добавьте `YANDEX_DIRECT_TOKEN` в Secrets.",
+        icon="🔑",
+    )
+    q_from = _api_min
+    q_to = pd.Timestamp.today()
+else:
+    # Соотношение колонок: даты компактные, кнопка пошире, справа кэш-инфо
+    tb_c1, tb_c2, tb_c3, tb_c4 = st.columns([1.1, 1.1, 1.6, 2.2])
+    with tb_c1:
         q_from = st.date_input(
             "С даты",
             value=_api_min,
@@ -120,88 +137,87 @@ with st.sidebar:
                 f"{_api_min:%d.%m.%Y} (3 года от текущего месяца)."
             ),
         )
+    with tb_c2:
         q_to = st.date_input(
             "По дату",
             value=pd.Timestamp.today(),
             key="yd_quality_to",
             format="DD.MM.YYYY",
         )
-
-        if st.button("Подтянуть качество",
-                     use_container_width=True, type="primary",
-                     key="yd_quality_sync"):
-            try:
-                from yandex_direct import (
-                    DirectCredentials,
-                    fetch_campaign_quality, fetch_keyword_report, fetch_ad_report,
-                )
-                creds_q = DirectCredentials(
-                    token=_yd_creds_global.token,
-                    client_login=_yd_creds_global.client_login,
-                )
-                period_str = (str(q_from), str(q_to))
-
-                with st.status(f"📥 Тяну Я.Директ за {period_str[0]} – {period_str[1]}…",
-                               expanded=True) as st_status:
-
-                    def _make_progress(stage_num: int, stage_name: str):
-                        """Возвращает callback, который обновляет label статуса
-                        по мере завершения чанков (параллельно)."""
-                        def _cb(done: int, total: int):
-                            st_status.update(
-                                label=f"📥 [{stage_num}/3] {stage_name} — "
-                                      f"чанков {done}/{total} (параллельно)",
-                                state="running",
-                            )
-                        return _cb
-
-                    st_status.update(label="📥 [1/3] Кампании (CTR, CPC, конверсии)…",
-                                     state="running")
-                    cq = fetch_campaign_quality(
-                        creds_q, *period_str,
-                        progress_callback=_make_progress(1, "Кампании"),
-                    )
-                    _save_and_sync("campaign_quality", cq, period_str)
-                    st.write(f"✅ Кампании: {len(cq)} строк")
-
-                    st_status.update(label="📥 [2/3] Ключевые слова…", state="running")
-                    kw = fetch_keyword_report(
-                        creds_q, *period_str,
-                        progress_callback=_make_progress(2, "Ключевые слова"),
-                    )
-                    _save_and_sync("keywords", kw, period_str)
-                    st.write(f"✅ Ключевые слова: {len(kw)} строк")
-
-                    st_status.update(label="📥 [3/3] Объявления (креативы)…", state="running")
-                    ad = fetch_ad_report(
-                        creds_q, *period_str,
-                        progress_callback=_make_progress(3, "Объявления"),
-                    )
-                    _save_and_sync("ads_creatives", ad, period_str)
-                    st.write(f"✅ Объявления: {len(ad)} строк")
-
-                    st_status.update(label="✅ Все 3 отчёта загружены", state="complete")
-                st.rerun()
-            except Exception as e:
-                st.error(str(e))
-
-        _, _cq_meta = load_quality_cache("campaign_quality")
-        if _cq_meta:
+    with tb_c3:
+        st.markdown("<div style='height:1.65rem'></div>", unsafe_allow_html=True)
+        _sync_clicked = st.button(
+            "📥 Подтянуть качество",
+            use_container_width=True, type="primary",
+            key="yd_quality_sync",
+        )
+    with tb_c4:
+        st.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+        _, _cq_meta_pre = load_quality_cache("campaign_quality")
+        if _cq_meta_pre:
             st.caption(
-                f"📦 Кэш за {_cq_meta.get('period_from', '?')} – "
-                f"{_cq_meta.get('period_to', '?')}"
+                f"📦 Кэш за **{_cq_meta_pre.get('period_from', '?')} – "
+                f"{_cq_meta_pre.get('period_to', '?')}** · "
+                f"кэширует CTR/CPC/конверсии, не запрашивает повторно"
             )
+        else:
+            st.caption("Кэш пуст — нажмите «Подтянуть качество» для загрузки.")
 
-    st.divider()
-    render_cache_reset_button(key_prefix="quality")
+    if _sync_clicked:
+        try:
+            from yandex_direct import (
+                DirectCredentials,
+                fetch_campaign_quality, fetch_keyword_report, fetch_ad_report,
+            )
+            creds_q = DirectCredentials(
+                token=_yd_creds_global.token,
+                client_login=_yd_creds_global.client_login,
+            )
+            period_str = (str(q_from), str(q_to))
 
-    if os.environ.get("APP_PASSWORD"):
-        st.divider()
-        if st.button("🚪 Выйти", use_container_width=True, key="logout_btn",
-                     help="Сбросить вход на этом устройстве."):
-            st.session_state.pop("auth_ok", None)
-            st.query_params.clear()
+            with st.status(f"📥 Тяну Я.Директ за {period_str[0]} – {period_str[1]}…",
+                           expanded=True) as st_status:
+
+                def _make_progress(stage_num: int, stage_name: str):
+                    """Callback который обновляет label статуса по мере
+                    завершения чанков (параллельно)."""
+                    def _cb(done: int, total: int):
+                        st_status.update(
+                            label=f"📥 [{stage_num}/3] {stage_name} — "
+                                  f"чанков {done}/{total} (параллельно)",
+                            state="running",
+                        )
+                    return _cb
+
+                st_status.update(label="📥 [1/3] Кампании (CTR, CPC, конверсии)…",
+                                 state="running")
+                cq = fetch_campaign_quality(
+                    creds_q, *period_str,
+                    progress_callback=_make_progress(1, "Кампании"),
+                )
+                _save_and_sync("campaign_quality", cq, period_str)
+                st.write(f"✅ Кампании: {len(cq)} строк")
+
+                st_status.update(label="📥 [2/3] Ключевые слова…", state="running")
+                kw = fetch_keyword_report(
+                    creds_q, *period_str,
+                    progress_callback=_make_progress(2, "Ключевые слова"),
+                )
+                _save_and_sync("keywords", kw, period_str)
+                st.write(f"✅ Ключевые слова: {len(kw)} строк")
+
+                st_status.update(label="📥 [3/3] Объявления (креативы)…", state="running")
+                ad = fetch_ad_report(
+                    creds_q, *period_str,
+                    progress_callback=_make_progress(3, "Объявления"),
+                )
+                _save_and_sync("ads_creatives", ad, period_str)
+                st.write(f"✅ Объявления: {len(ad)} строк")
+
+                st_status.update(label="✅ Все 3 отчёта загружены", state="complete")
             st.rerun()
+        except Exception as e:
+            st.error(str(e))
 
 
 # ─── Загрузка кэша ────────────────────────────────────────────
@@ -304,7 +320,7 @@ if _cache_empty:
         )
     else:
         st.info(
-            "📭 **Нет данных.** Выберите период в сайдбаре слева и нажмите "
+            "📭 **Нет данных.** Выберите период в шапке страницы и нажмите "
             "**«Подтянуть качество»** — кампании, ключевики и объявления подтянутся "
             "из Яндекс.Директа.\n\n"
             "Что вы увидите:\n"
@@ -318,7 +334,7 @@ _q_period_lbl = (
     f"{_q_camp_meta.get('period_from', '?')} – {_q_camp_meta.get('period_to', '?')}"
     if _q_camp_meta else "—"
 )
-st.caption(f"Данные API за период **{_q_period_lbl}**. Обновляется кнопкой «Подтянуть качество» в сайдбаре.")
+st.caption(f"Данные API за период **{_q_period_lbl}**. Обновляется кнопкой «Подтянуть качество» в шапке выше.")
 
 # Расхождение с шапкой главного дашборда — если расход с API < расхода
 # в XLSX за общий период, скорее всего XLSX содержит архивные кампании
@@ -344,7 +360,7 @@ if _qp_total_spend > 0:
 # вкладок, никаких подкаталогов — один экран, полная картина.
 
 if _q_camp.empty:
-    st.info("Нет данных по кампаниям. Подтяните данные в сайдбаре.")
+    st.info("Нет данных по кампаниям. Подтяните данные кнопкой в шапке выше.")
     st.stop()
 
 
