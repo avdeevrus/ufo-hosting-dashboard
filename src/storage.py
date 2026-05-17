@@ -170,6 +170,76 @@ def sync_api_cache_down():
         return pd.DataFrame()
 
 
+# ─── Кэш «качества рекламы» (3 json'a) ───────────────────────
+# Эти файлы — кэш CTR/CPC/конверсий по кампаниям, ключевикам и объявлениям.
+# Они большие (несколько МБ) и долго грузятся из Я.Директа (3 года × 3 отчёта
+# с лимитом 20 req/10 sec ≈ 30 секунд). На эфемерной FS Streamlit Cloud они
+# стираются при каждом деплое → пользователь видит автозагрузку каждый раз.
+# Заливаем в HF Dataset чтобы переживали рестарты контейнера.
+
+QUALITY_CACHE_FILES = (
+    "yd_campaign_quality.json",
+    "yd_keywords.json",
+    "yd_ads_creatives.json",
+)
+
+
+def sync_quality_cache_down() -> dict:
+    """Скачиваем api_cache/yd_*.json с HF в локальный data/api_cache/.
+    Вызывается при старте каждой страницы, чтобы автозагрузка не дёргалась
+    после рестарта контейнера. Возвращает счётчик скачанных файлов."""
+    token = _get_token()
+    if not token:
+        return {"downloaded": 0, "enabled": False}
+    try:
+        from huggingface_hub import hf_hub_download
+    except Exception:
+        return {"downloaded": 0, "enabled": False, "error": "no_hf_hub"}
+
+    downloaded = 0
+    for fname in QUALITY_CACHE_FILES:
+        try:
+            hf_hub_download(
+                repo_id=DATASET_REPO,
+                repo_type=DATASET_TYPE,
+                filename=f"api_cache/{fname}",
+                token=token,
+                local_dir=str(CACHE_DIR),
+            )
+            downloaded += 1
+        except Exception:
+            # 404/network/etc — файла просто нет на HF, это нормально
+            continue
+    return {"downloaded": downloaded, "enabled": True}
+
+
+def sync_quality_cache_up(filename: str) -> bool:
+    """Заливаем один файл из data/api_cache/ в HF Dataset.
+    Вызывается после успешного fetch+save_quality_cache, чтобы следующая
+    сессия / следующий деплой увидели свежий кэш."""
+    token = _get_token()
+    if not token:
+        return False
+    if filename not in QUALITY_CACHE_FILES:
+        return False
+    local_path = CACHE_DIR / "api_cache" / filename
+    if not local_path.exists():
+        return False
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        api.upload_file(
+            path_or_fileobj=str(local_path),
+            path_in_repo=f"api_cache/{filename}",
+            repo_id=DATASET_REPO,
+            repo_type=DATASET_TYPE,
+        )
+        return True
+    except Exception as e:
+        print(f"Upload quality cache failed: {e}")
+        return False
+
+
 def delete_remote(filename: str, subdir: str) -> bool:
     token = _get_token()
     if not token:

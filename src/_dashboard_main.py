@@ -875,6 +875,10 @@ def _initial_storage_sync():
     if api_df is not None and not api_df.empty:
         info["api_cache_rows"] = len(api_df)
         info["api_cache_last_month"] = str(api_df["month"].max())[:10] if "month" in api_df.columns else None
+    # Кэш «качества рекламы» (CTR/CPC/конверсии) — 3 json'a. Без них на странице
+    # /quality каждый раз после деплоя запускается долгая автозагрузка (3 года).
+    q_info = storage.sync_quality_cache_down()
+    info["quality_cache_downloaded"] = q_info.get("downloaded", 0)
     return info
 
 
