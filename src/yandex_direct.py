@@ -71,9 +71,11 @@ class _SlidingWindowLimiter:
                 if len(self._calls) < self.max_calls:
                     self._calls.append(now)
                     return
-                # Лимит выбран — ждём пока самый старый «вытечет» + 50ms запас
-                wait = self._calls[0] + self.window - now + 0.05
-            time.sleep(max(0.05, wait))
+                # Лимит выбран — ждём пока самый старый «вытечет» + 100ms запас
+                wait = self._calls[0] + self.window - now + 0.1
+            # Min sleep 0.1s — иначе при wait≈0 множественные потоки
+            # входят в busy-wait по 50ms и нагружают CPU без пользы.
+            time.sleep(max(0.1, wait))
 
 
 _REPORTS_LIMITER = _SlidingWindowLimiter(
@@ -355,6 +357,11 @@ def _fetch_chunked(creds: DirectCredentials,
                     errors.append(e)
         finally:
             with lock:
+                # done_count считает ВСЕ обработанные чанки (успех + ошибки),
+                # не только успешные — иначе при сбоях прогресс не дошёл бы
+                # до total, и пользователю казалось бы что зависло. Итоговый
+                # статус (сколько упало) показывается вызывающим кодом
+                # (см. _quality_page.py — там errors_summary разбирается).
                 done_count += 1
                 if progress_callback:
                     try:
@@ -433,6 +440,7 @@ CAMPAIGN_QUALITY_FIELDS = [
     "Cost", "AvgCpc",
     "Conversions", "ConversionRate", "CostPerConversion",
     "BounceRate", "AvgPageviews",
+    "Sessions",  # для взвешивания BounceRate / AvgPageviews при склейке чанков
 ]
 
 
@@ -463,23 +471,41 @@ def fetch_campaign_quality(creds: DirectCredentials,
         "CostPerConversion": "cost_per_conversion",
         "BounceRate": "bounce_rate",
         "AvgPageviews": "avg_pageviews",
+        "Sessions": "sessions",
     })
     # API возвращает «--» для пустых значений (когда нет конверсий или поведенческих)
     for col in ("ctr", "avg_cpc", "conversions", "conversion_rate",
                 "cost_per_conversion", "bounce_rate", "avg_pageviews"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    for col in ("impressions", "clicks", "spend_rub"):
+    for col in ("impressions", "clicks", "spend_rub", "sessions"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     # Если было несколько чанков, одна кампания может быть в нескольких строках:
-    # агрегируем суммы и пересчитываем средние.
+    # агрегируем суммы и пересчитываем средние ВЗВЕШЕННО по визитам/кликам.
+    # Простое mean неверно: если кампания в одном периоде имела 1000 визитов
+    # с bounce 20%, а в другом 100 с bounce 80% — простое среднее даст 50%,
+    # реальное взвешенное = (1000·20 + 100·80)/1100 ≈ 25%.
     group_cols = [c for c in ("campaign", "campaign_type") if c in df.columns]
     if group_cols and len(df) > df[group_cols].drop_duplicates().shape[0]:
-        agg_sum = {c: "sum" for c in ("impressions", "clicks", "spend_rub", "conversions") if c in df.columns}
-        agg_mean = {c: "mean" for c in ("bounce_rate", "avg_pageviews") if c in df.columns}
-        df = df.groupby(group_cols, as_index=False).agg({**agg_sum, **agg_mean})
+        # Для взвешивания нужны pre-aggregated «вес × метрика». Считаем
+        # отдельные столбцы _weighted перед groupby.
+        weight_col = "sessions" if "sessions" in df.columns and df["sessions"].sum() > 0 else "clicks"
+        for behavior_col in ("bounce_rate", "avg_pageviews"):
+            if behavior_col in df.columns and weight_col in df.columns:
+                df[f"_w_{behavior_col}"] = df[behavior_col] * df[weight_col]
+
+        agg = {c: "sum" for c in ("impressions", "clicks", "spend_rub",
+                                  "conversions", "sessions") if c in df.columns}
+        # Взвешенные числители суммируем — потом делим на сумму весов
+        for behavior_col in ("bounce_rate", "avg_pageviews"):
+            wcol = f"_w_{behavior_col}"
+            if wcol in df.columns:
+                agg[wcol] = "sum"
+        df = df.groupby(group_cols, as_index=False).agg(agg)
+
+        # Пересчёт средних
         if "impressions" in df and "clicks" in df:
             df["ctr"] = (df["clicks"] / df["impressions"].replace(0, pd.NA) * 100).fillna(0)
         if "spend_rub" in df and "clicks" in df:
@@ -488,6 +514,13 @@ def fetch_campaign_quality(creds: DirectCredentials,
             df["conversion_rate"] = (df["conversions"] / df["clicks"].replace(0, pd.NA) * 100).fillna(0)
         if "conversions" in df and "spend_rub" in df:
             df["cost_per_conversion"] = (df["spend_rub"] / df["conversions"].replace(0, pd.NA))
+        # Взвешенные поведенческие
+        weight_series = df[weight_col] if weight_col in df.columns else None
+        for behavior_col in ("bounce_rate", "avg_pageviews"):
+            wcol = f"_w_{behavior_col}"
+            if wcol in df.columns and weight_series is not None:
+                df[behavior_col] = (df[wcol] / weight_series.replace(0, pd.NA)).fillna(0)
+                df.drop(columns=[wcol], inplace=True)
     return df
 
 

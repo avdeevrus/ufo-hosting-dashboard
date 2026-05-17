@@ -294,7 +294,9 @@ def cohort_payback(orders: pd.DataFrame, ads: pd.DataFrame) -> pd.DataFrame:
 
 def product_mix(orders: pd.DataFrame, by: str = "product_family") -> pd.DataFrame:
     paid = _paid(orders)
-    if paid.empty:
+    if paid.empty or by not in paid.columns:
+        # by-колонка может отсутствовать в старых CSV без product_family /
+        # product_location — раньше тут падало KeyError, теперь пустой df.
         return pd.DataFrame()
     g = (paid.groupby(by)
          .agg(orders=("order_id", "count"),
