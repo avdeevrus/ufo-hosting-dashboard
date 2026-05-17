@@ -80,18 +80,19 @@ _progress("Запускаю дашборд…", 5)
 #                       Стили
 # ============================================================
 
-PALETTE = {
-    "bg": "#ffffff",
-    "panel": "#f6f8fa",
-    "border": "#d0d7de",
-    "text": "#0d1117",
-    "muted": "#57606a",
-    "primary": "#1f6feb",   # синий — главный
-    "green": "#1a7f37",     # доход / успех
-    "red": "#cf222e",       # расход / потери
-    "orange": "#d97706",    # внимание
-    "purple": "#8250df",    # дополнительный
-}
+# Единые палитра, layout и форматтеры — из _shared. Раньше тут была
+# полная копия каждой функции (~130 строк), что приводило к рассинхрону
+# при изменении одного места.
+from _shared import (
+    PALETTE,
+    PLOTLY_LAYOUT,
+    fmt_rub,
+    fmt_num,
+    plural_ru,
+    fmt_month_ru,
+    make_sparkline_svg,
+    kpi_card,
+)
 
 st.markdown(
     f"""
@@ -579,130 +580,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-PLOTLY_LAYOUT = dict(
-    template="plotly_white",
-    paper_bgcolor="#ffffff",
-    plot_bgcolor="#ffffff",
-    font=dict(color=PALETTE["text"], family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", size=12),
-    margin=dict(t=40, l=10, r=10, b=10),
-    xaxis=dict(gridcolor="#eaeef2", zerolinecolor="#d0d7de", linecolor="#d0d7de"),
-    yaxis=dict(gridcolor="#eaeef2", zerolinecolor="#d0d7de", linecolor="#d0d7de"),
-)
-
-
-def fmt_rub(v, suffix=" ₽"):
-    """Деньги: до миллиона — точные цифры с пробелами, от миллиона — млн."""
-    if v is None or pd.isna(v):
-        return "—"
-    av = abs(v)
-    if av >= 1_000_000:
-        return f"{v/1_000_000:.2f} млн{suffix}"
-    return f"{v:,.0f}{suffix}".replace(",", " ")
-
-
-def fmt_num(v):
-    if v is None or pd.isna(v):
-        return "—"
-    return f"{int(v):,}".replace(",", " ")
-
-
-def plural_ru(n, one, few, many):
-    """Русская плюрализация: 1 файл / 2 файла / 5 файлов."""
-    n = abs(int(n))
-    if n % 100 in (11, 12, 13, 14):
-        return many
-    last = n % 10
-    if last == 1:
-        return one
-    if 2 <= last <= 4:
-        return few
-    return many
-
-
-_RU_MONTHS_SHORT = ["", "Янв", "Фев", "Мар", "Апр", "Май", "Июн",
-                    "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
-_RU_MONTHS_FULL = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-                   "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
-_RU_MONTHS_LOW = ["", "январь", "февраль", "март", "апрель", "май", "июнь",
-                  "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
-
-
-def fmt_month_ru(dt, kind="short_year"):
-    """Форматирует месяц на русском. kind:
-    - 'short_year' → 'Авг 2025'
-    - 'full_year'  → 'Август 2025'
-    - 'low_year'   → 'август 2025'"""
-    if pd.isna(dt):
-        return "—"
-    dt = pd.Timestamp(dt)
-    if kind == "full_year":
-        return f"{_RU_MONTHS_FULL[dt.month]} {dt.year}"
-    if kind == "low_year":
-        return f"{_RU_MONTHS_LOW[dt.month]} {dt.year}"
-    return f"{_RU_MONTHS_SHORT[dt.month]} {dt.year}"
-
-
-def make_sparkline_svg(values, color="#1f6feb", width=88, height=28, fill=True):
-    """Возвращает inline SVG sparkline для KPI плитки. Принимает список чисел."""
-    if not values or len(values) < 2:
-        return ""
-    vals = [float(v) if v is not None and not pd.isna(v) else 0 for v in values]
-    if all(v == 0 for v in vals):
-        return ""
-    mn, mx = min(vals), max(vals)
-    rng = (mx - mn) if mx > mn else max(abs(mx), 1)
-    points = []
-    pad = 3
-    for i, v in enumerate(vals):
-        x = pad + i / (len(vals) - 1) * (width - 2 * pad)
-        y = height - pad - ((v - mn) / rng) * (height - 2 * pad)
-        points.append(f"{x:.1f},{y:.1f}")
-    line = " ".join(points)
-    fill_poly = ""
-    if fill:
-        fill_points = f"{pad},{height - pad} {line} {width - pad},{height - pad}"
-        fill_poly = f'<polygon points="{fill_points}" fill="{color}" fill-opacity="0.12"/>'
-    # точка последнего значения
-    last_x = pad + (len(vals) - 1) / (len(vals) - 1) * (width - 2 * pad)
-    last_y = height - pad - ((vals[-1] - mn) / rng) * (height - 2 * pad)
-    return (
-        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-        f'style="display:block; margin-top:0.35rem;">'
-        f'{fill_poly}'
-        f'<polyline points="{line}" fill="none" stroke="{color}" stroke-width="1.5" '
-        f'stroke-linejoin="round" stroke-linecap="round"/>'
-        f'<circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="2.2" fill="{color}"/>'
-        f'</svg>'
-    )
-
-
-def kpi_card(label: str, value: str, delta: str = "", kind: str = "",
-             delta_kind: str = "neutral", tooltip: str = "",
-             spark_values=None, spark_color: str | None = None):
-    """Карточка KPI с фиксированным стилем. tooltip — подсказка ⓘ.
-    spark_values — список чисел для мини-графика тренда внутри плитки."""
-    klass = f"kpi-card {kind}".strip()
-    delta_html = f'<div class="kpi-delta {delta_kind}">{delta}</div>' if delta else ""
-    tip_html = ""
-    if tooltip:
-        tip_safe = tooltip.replace('"', '&quot;').replace("\n", " ")
-        tip_html = f'<span class="kpi-tip" data-tip="{tip_safe}">ⓘ</span>'
-    spark_html = ""
-    if spark_values and len(spark_values) >= 2:
-        c = spark_color or {
-            "green": PALETTE["green"], "red": PALETTE["red"],
-            "primary": PALETTE["primary"], "orange": PALETTE["orange"],
-        }.get(kind, PALETTE["muted"])
-        spark_html = make_sparkline_svg(spark_values, color=c)
-    return f"""
-    <div class="{klass}">
-      <div class="kpi-label">{label}{tip_html}</div>
-      <div class="kpi-value">{value}</div>
-      {delta_html}
-      {spark_html}
-    </div>
-    """
 
 
 def _generate_insights(orders_df, ads_df, ck, ms, ch_sum, prev_kpi=None, prev_label=None):

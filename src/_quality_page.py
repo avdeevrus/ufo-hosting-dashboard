@@ -402,6 +402,11 @@ if _q_camp.empty:
 
 # ─── Нормализация и агрегаты ──────────────────────────────────
 def _to_num(df: pd.DataFrame, cols: tuple) -> pd.DataFrame:
+    """Приводит указанные колонки к числовым типам IN-PLACE и возвращает
+    тот же df. Вызывающий код ОБЯЗАН передавать копию (`.copy()`) если
+    оригинал важен — иначе мутируется кэшированный объект из
+    `load_quality_cache`, что ломает другие страницы.
+    """
     for c in cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
