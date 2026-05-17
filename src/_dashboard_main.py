@@ -2293,10 +2293,15 @@ else:
 pb_df = M.cohort_payback(orders_all, ads_all)
 
 if not pb_df.empty and "ad_spend" in pb_df.columns:
-    # Берём только те когорты, где есть и расход, и хотя бы 1 клиент
+    # «Вложено» считаем по ВСЕМ месяцам с расходом — даже если из них ещё
+    # не пришло платящих клиентов. Иначе hero показывает 13.06 млн при
+    # реальном расходе 13.82 млн в шапке (760к «теряются»).
+    pb_with_spend = pb_df[pb_df["ad_spend"] > 0].copy()
+    # Для кривой возврата, таблицы break-even и эры-сравнения — только
+    # настоящие когорты (с клиентами), иначе деление на 0 и шум в графике.
     pb = pb_df[(pb_df["ad_spend"] > 0) & (pb_df["clients"] > 0)].copy()
 
-    if not pb.empty:
+    if not pb_with_spend.empty:
         st.markdown(
             '<div class="section-title">🎯 Долгосрочная окупаемость рекламы</div>',
             unsafe_allow_html=True,
@@ -2309,16 +2314,21 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
         max_horizon = max(int(c.replace("cum_M+", "")) for c in rev_cols) if rev_cols else 0
 
         # ─── Hero: ключевая цифра окупаемости ──────────────────
-        total_spend_all = float(pb["ad_spend"].sum())
+        # Вложено = весь расход на Директ (= шапка). Вернулось = деньги,
+        # реально пришедшие от когорт с клиентами (без когорт нечему возвращаться).
+        total_spend_all = float(pb_with_spend["ad_spend"].sum())
+        spend_without_cohorts = float(
+            pb_with_spend.loc[pb_with_spend["clients"] == 0, "ad_spend"].sum()
+        )
         latest_col = rev_cols[-1] if rev_cols else None
         # Кумулятив возврата на текущий момент (последний наблюдаемый M+N для каждой когорты)
         observed_return = float(
             sum(row[rev_cols].max() if not pd.isna(row[rev_cols].max()) else 0
                 for _, row in pb.iterrows())
-        )
+        ) if not pb.empty and rev_cols else 0.0
         return_pct = (observed_return / total_spend_all * 100) if total_spend_all else 0
         # Сколько когорт уже окупились (payback_month <= max_horizon)
-        cohorts_paid = int((pb["payback_month"].notna() & (pb["payback_month"] >= 0)).sum())
+        cohorts_paid = int((pb["payback_month"].notna() & (pb["payback_month"] >= 0)).sum()) if not pb.empty else 0
         cohorts_total = int(len(pb))
         # Среднее число месяцев до окупаемости (только по окупившимся когортам)
         avg_payback_m = pb["payback_month"].dropna()
@@ -2328,6 +2338,24 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
         )
 
         hero_kind = "green" if return_pct >= 100 else "orange" if return_pct >= 50 else "red"
+
+        # Поясняем расхождения: (1) общий доход в шапке включает «старых»
+        # клиентов, пришедших до начала рекламы — они не считаются возвратом
+        # рекламного бюджета. (2) часть расхода ушла в месяцы без новых
+        # платящих клиентов — это «бюджет в работе» (свежие месяцы, где
+        # клиенты могут ещё дозреть) или прямой waste.
+        _hero_notes = []
+        if spend_without_cohorts > 0:
+            _hero_notes.append(
+                f"<b>{fmt_rub(spend_without_cohorts)}</b> расхода ещё не дали "
+                f"платящих клиентов (свежие месяцы / waste)"
+            )
+        _hero_notes.append(
+            "«Вернулось» считается только по клиентам, которые впервые "
+            "зарегистрировались в месяцы с расходом на Директ — без двойного "
+            "счёта старых клиентов"
+        )
+        _hero_notes_html = " · ".join(_hero_notes)
 
         st.markdown(
             f"""
@@ -2340,6 +2368,9 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
                   клиенты уже вернули <b>{fmt_rub(observed_return)}</b>.
                   Окупилось когорт: <b>{cohorts_paid} из {cohorts_total}</b>,
                   среднее время окупаемости: <b>{avg_payback_label}</b>.
+                  <div style="margin-top:0.4rem; font-size:0.78rem; color:#57606a;">
+                    ℹ️ {_hero_notes_html}.
+                  </div>
                 </div>
               </div>
               <div class="kpi-hero-breakdown">
@@ -2360,6 +2391,17 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
             """,
             unsafe_allow_html=True,
         )
+
+        # Дальше — кривая и таблица по реальным когортам с клиентами.
+        # Если расход уже был, но клиенты ещё не появились — выходим
+        # (hero уже показан, остальное считать не из чего).
+        if pb.empty or not rev_cols:
+            st.info(
+                "📭 По текущим месяцам с расходом ещё нет платящих клиентов в "
+                "когортах — кривая окупаемости появится, когда клиенты сделают "
+                "первые оплаты."
+            )
+            st.stop()
 
         # ─── Payback Curve: средний % возврата по горизонту ────
         st.markdown(

@@ -115,3 +115,38 @@ def test_comparable_kpi_overlap():
     ck = M.comparable_kpi(make_orders(), make_ads())
     assert ck is not None
     assert ck.spend == 3000
+
+
+def test_cohort_payback_preserves_spend_without_cohorts():
+    """Расход в месяцы без платящих клиентов не должен «теряться» из pb.
+
+    Регрессионный тест: до фикса hero «Вложено» показывал меньше шапки,
+    потому что cohort_payback индексировался только по месяцам с
+    регистрациями платящих клиентов.
+    """
+    # Добавим месяц мая 2026 с расходом 5000₽, но без клиентов
+    ads_with_extra_month = pd.concat([
+        make_ads(),
+        pd.DataFrame({
+            "month":     [pd.Timestamp("2026-05-01")],
+            "campaign":  ["Поиск"],
+            "spend_rub": [5000.0],
+        }),
+    ], ignore_index=True)
+
+    pb = M.cohort_payback(make_orders(), ads_with_extra_month)
+    # Расход в pb должен равняться полному расходу из ads
+    assert pb["ad_spend"].sum() == ads_with_extra_month["spend_rub"].sum()
+    # Месяц без клиентов должен быть в индексе с clients=0
+    assert pd.Timestamp("2026-05-01") in pb.index
+    assert pb.loc[pd.Timestamp("2026-05-01"), "clients"] == 0
+    assert pb.loc[pd.Timestamp("2026-05-01"), "ad_spend"] == 5000.0
+
+
+def test_cohort_payback_only_spend_no_orders():
+    """Edge case: есть расход, но ни одной оплаты — не должно падать."""
+    empty_orders = make_orders().iloc[0:0]
+    pb = M.cohort_payback(empty_orders, make_ads())
+    assert not pb.empty
+    assert pb["ad_spend"].sum() == 3000.0
+    assert (pb["clients"] == 0).all()
