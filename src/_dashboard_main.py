@@ -2496,6 +2496,20 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
             '<div class="section-title">Окупаемость по когортам — кто когда вышел в плюс</div>',
             unsafe_allow_html=True,
         )
+        st.caption(
+            "Когорта = клиенты, впервые пришедшие в конкретный месяц. "
+            "Колонки показывают **накопленный возврат от расхода** на эту когорту: "
+            "«В мес рег.» — что вернули в тот же месяц регистрации, "
+            "«За 3 мес» — что вернули за 3 месяца с момента регистрации, и т.д. "
+            "100% = когорта окупила себя полностью."
+        )
+
+        # Фильтр-переключатель: все vs проблемные
+        be_filter = st.radio(
+            "Показать",
+            ["Все когорты", "Только не окупившиеся", "Проблемные (возврат за 6 мес < 30%)"],
+            horizontal=True, key="be_table_filter",
+        )
 
         be_show = pb.reset_index()
         # Колонки для таблицы: ключевые M+ горизонты
@@ -2508,40 +2522,91 @@ if not pb_df.empty and "ad_spend" in pb_df.columns:
             lambda d: fmt_month_ru(d, "short_year")
         )
 
-        # Финальная таблица
-        cols_order = ["cohort_label", "clients", "ad_spend", "cac"]
-        cols_rename = {
-            "cohort_label": "Когорта",
-            "clients": "Клиентов",
-            "ad_spend": "Расход, ₽",
-            "cac": "CAC, ₽",
-        }
-        for k in key_horizons:
-            cols_order.append(f"return_m{k}")
-            cols_rename[f"return_m{k}"] = f"Возврат M+{k}, %"
-        cols_order.append("payback_month")
-        cols_rename["payback_month"] = "Окупилось на M+"
+        # ─── Топ-кампания месяца (по расходу) ─────────────────
+        # В CSV нет источника трафика per клиент → точно сказать «откуда
+        # пришёл этот клиент» нельзя. Но можно показать, какая кампания
+        # была главной по расходу в месяц регистрации когорты — это даёт
+        # контекст «вот этот месяц был драйверным для кампании X».
+        top_camp_map = {}
+        if not ads_all.empty and "campaign" in ads_all.columns:
+            _spend_by_mc = (ads_all.groupby(["month", "campaign"])["spend_rub"]
+                            .sum().reset_index())
+            for m in be_show.iloc[:, 0]:
+                _slice = _spend_by_mc[_spend_by_mc["month"] == m]
+                if not _slice.empty:
+                    _top = _slice.nlargest(1, "spend_rub").iloc[0]
+                    _share = _top["spend_rub"] / _slice["spend_rub"].sum() * 100
+                    top_camp_map[m] = f"{_top['campaign'][:35]} ({_share:.0f}%)"
+        be_show["top_campaign"] = be_show.iloc[:, 0].map(top_camp_map).fillna("—")
 
-        be_table = be_show[cols_order].rename(columns=cols_rename)
+        # Применяем фильтр
+        if be_filter == "Только не окупившиеся":
+            be_show = be_show[be_show["payback_month"].isna()]
+        elif be_filter == "Проблемные (возврат за 6 мес < 30%)" and "return_m6" in be_show.columns:
+            be_show = be_show[(be_show["return_m6"].fillna(0) < 30)
+                              & (be_show["clients"] > 0)]
 
-        column_config = {
-            "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
-            "CAC, ₽": st.column_config.NumberColumn(format="%.0f"),
-            "Клиентов": st.column_config.NumberColumn(format="%d"),
-            "Окупилось на M+": st.column_config.NumberColumn(
-                format="%.0f", help="Через сколько месяцев когорта окупила свой CAC. Пусто = ещё не окупилась."
-            ),
-        }
-        for k in key_horizons:
-            column_config[f"Возврат M+{k}, %"] = st.column_config.ProgressColumn(
-                format="%.0f%%", min_value=0, max_value=200,
-                help=f"Накопленный возврат к месяцу M+{k} как % от расхода на эту когорту",
+        if be_show.empty:
+            st.success("✅ Нет когорт под этот фильтр — все когорты в норме.")
+        else:
+            # Заголовки человеко-понятные вместо M+0/M+1/etc
+            horizon_label = {
+                0: "В мес рег.",
+                1: "За 1 мес",
+                3: "За 3 мес",
+                6: "За 6 мес",
+                12: "За 12 мес",
+            }
+            horizon_help = {
+                0: "Сколько % от рекламного расхода эта когорта вернула в свой первый месяц.",
+                1: "Накопленный % возврата к концу 1-го месяца после регистрации.",
+                3: "Накопленный % возврата за 3 месяца с момента регистрации.",
+                6: "Накопленный % возврата за полгода. Главный ориентир для хостинга.",
+                12: "Накопленный % возврата за год. Если ≥100% — реклама окупается за год.",
+            }
+
+            # Финальная таблица
+            cols_order = ["cohort_label", "top_campaign", "clients", "ad_spend", "cac"]
+            cols_rename = {
+                "cohort_label": "Когорта",
+                "top_campaign": "Главная кампания месяца",
+                "clients": "Клиентов",
+                "ad_spend": "Расход, ₽",
+                "cac": "CAC, ₽",
+            }
+            for k in key_horizons:
+                cols_order.append(f"return_m{k}")
+                cols_rename[f"return_m{k}"] = horizon_label.get(k, f"M+{k}")
+            cols_order.append("payback_month")
+            cols_rename["payback_month"] = "Окупилось через"
+
+            be_table = be_show[cols_order].rename(columns=cols_rename)
+
+            column_config = {
+                "Главная кампания месяца": st.column_config.TextColumn(
+                    help="Кампания с наибольшим расходом в этот месяц (и её доля). "
+                         "В CSV нет связки клиент→кампания, поэтому это контекст, "
+                         "а не точное распределение клиентов."
+                ),
+                "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                "CAC, ₽": st.column_config.NumberColumn(format="%.0f"),
+                "Клиентов": st.column_config.NumberColumn(format="%d"),
+                "Окупилось через": st.column_config.NumberColumn(
+                    format="%.0f мес",
+                    help="Через сколько месяцев накопленный доход когорты "
+                         "перекрыл расход на её привлечение. Пусто = ещё не окупилась."
+                ),
+            }
+            for k in key_horizons:
+                column_config[horizon_label.get(k, f"M+{k}")] = st.column_config.ProgressColumn(
+                    format="%.0f%%", min_value=0, max_value=200,
+                    help=horizon_help.get(k, f"Накопленный возврат к месяцу M+{k}"),
+                )
+
+            st.dataframe(
+                be_table, use_container_width=True, hide_index=True,
+                column_config=column_config,
             )
-
-        st.dataframe(
-            be_table, use_container_width=True, hide_index=True,
-            column_config=column_config,
-        )
 
         # ─── Инсайт: сравнение «эры» — старый vs новый аккаунт ─
         # В контексте проекта: в ноябре 2025 запустили «новый» аккаунт Я.Директа,
