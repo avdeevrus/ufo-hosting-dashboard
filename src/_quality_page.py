@@ -320,12 +320,238 @@ _q_period_lbl = (
 )
 st.caption(f"Данные API за период **{_q_period_lbl}**. Обновляется кнопкой «Подтянуть качество» в сайдбаре.")
 
+# Расхождение с шапкой главного дашборда — если расход с API < расхода
+# в XLSX за общий период, скорее всего XLSX содержит архивные кампании
+# которые API уже не отдаёт.
+_qp_total_spend = (
+    pd.to_numeric(_q_camp["spend_rub"], errors="coerce").sum()
+    if "spend_rub" in _q_camp.columns else 0.0
+)
+if _qp_total_spend > 0:
+    st.caption(
+        f"ℹ️ **Расход {fmt_rub(_qp_total_spend)} = только Яндекс.Директ API.** "
+        f"На главном дашборде расход может быть больше — там XLSX-выгрузки + API. "
+        f"XLSX часто содержит архивные/закрытые кампании, которые API уже не возвращает. "
+        f"Это не ошибка расчёта — это разный охват источников."
+    )
+
 
 # ─── Tabs ─────────────────────────────────────────────────────
-quality_tabs = st.tabs(["Кампании", "Ключевые слова", "Объявления"])
+quality_tabs = st.tabs([
+    "🔬 Глубокая (drill-down)",
+    "Все кампании",
+    "Все ключи",
+    "Все объявления",
+])
 
-# ====== Tab 1: КАМПАНИИ ======================================
+
+# ====== Tab 0: ГЛУБОКАЯ АНАЛИТИКА (DRILL-DOWN) ===============
 with quality_tabs[0]:
+    st.caption(
+        "Выберите кампанию → раскроется список групп объявлений → "
+        "выберите группу → увидите объявления и ключевики этой группы."
+    )
+
+    if _q_camp.empty:
+        st.info("Нет данных по кампаниям.")
+    else:
+        # Нормализуем числа
+        _dd_camp = _q_camp.copy()
+        for col in ("ctr", "conversion_rate", "bounce_rate", "avg_pageviews",
+                    "conversions", "cost_per_conversion", "avg_cpc",
+                    "spend_rub", "impressions", "clicks"):
+            if col in _dd_camp.columns:
+                _dd_camp[col] = pd.to_numeric(_dd_camp[col], errors="coerce")
+        _dd_camp = _dd_camp.sort_values("spend_rub", ascending=False)
+
+        _dd_kw = _q_kw.copy() if not _q_kw.empty else pd.DataFrame()
+        _dd_ad = _q_ad.copy() if not _q_ad.empty else pd.DataFrame()
+        for _df in (_dd_kw, _dd_ad):
+            for col in ("ctr", "conversion_rate", "conversions",
+                        "cost_per_conversion", "avg_cpc",
+                        "spend_rub", "impressions", "clicks"):
+                if col in _df.columns:
+                    _df[col] = pd.to_numeric(_df[col], errors="coerce")
+
+        # Список кампаний с расходом в подписи (sorted by spend desc)
+        _camp_options = _dd_camp["campaign"].tolist()
+        _camp_spend_map = dict(zip(_dd_camp["campaign"], _dd_camp["spend_rub"].fillna(0)))
+
+        def _fmt_camp(name: str) -> str:
+            sp = _camp_spend_map.get(name, 0)
+            return f"{name[:80]} · {fmt_rub(sp)}"
+
+        sel_camp = st.selectbox(
+            "🎯 Кампания",
+            options=_camp_options,
+            format_func=_fmt_camp,
+            key="dd_camp_select",
+        )
+
+        if sel_camp:
+            # ─── KPI выбранной кампании ───────────────────────
+            c_row = _dd_camp[_dd_camp["campaign"] == sel_camp].iloc[0]
+            kpi_cols = st.columns(5)
+            kpi_cols[0].markdown(kpi_card(
+                "Расход", fmt_rub(c_row.get("spend_rub", 0)),
+                f"{int(c_row.get('impressions', 0)):,} показов".replace(",", " "),
+                kind="red",
+            ), unsafe_allow_html=True)
+            kpi_cols[1].markdown(kpi_card(
+                "Кликов", fmt_num(c_row.get("clicks", 0)),
+                f"CTR {c_row.get('ctr', 0):.2f}%",
+                kind="primary",
+            ), unsafe_allow_html=True)
+            kpi_cols[2].markdown(kpi_card(
+                "Средний CPC", fmt_rub(c_row.get("avg_cpc", 0)),
+                "стоимость клика",
+            ), unsafe_allow_html=True)
+            kpi_cols[3].markdown(kpi_card(
+                "Конверсии", fmt_num(c_row.get("conversions", 0) or 0),
+                f"CR {c_row.get('conversion_rate', 0) or 0:.2f}%",
+                kind="green" if (c_row.get("conversions", 0) or 0) > 0 else "red",
+            ), unsafe_allow_html=True)
+            kpi_cols[4].markdown(kpi_card(
+                "CPL", fmt_rub(c_row.get("cost_per_conversion", 0) or 0),
+                "стоимость цели",
+            ), unsafe_allow_html=True)
+
+            st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+
+            # ─── Группы объявлений в этой кампании ────────────
+            # Группы достаём из ad_report или keyword_report (что доступно)
+            camp_ads_df = _dd_ad[_dd_ad["campaign"] == sel_camp] if "campaign" in _dd_ad.columns else pd.DataFrame()
+            camp_kw_df = _dd_kw[_dd_kw["campaign"] == sel_camp] if "campaign" in _dd_kw.columns else pd.DataFrame()
+
+            # Сводная по группам: предпочитаем суммы из объявлений (полнее),
+            # но если их нет — берём из ключей. CTR/CPC пересчитываем из сумм.
+            groups_src = camp_ads_df if not camp_ads_df.empty else camp_kw_df
+            if groups_src.empty or "ad_group" not in groups_src.columns:
+                st.info(
+                    "Нет детализации по группам объявлений для этой кампании "
+                    "(возможно, авто-таргетинг РСЯ или старые архивные данные)."
+                )
+            else:
+                agg_dict = {c: "sum" for c in ("impressions", "clicks", "spend_rub", "conversions") if c in groups_src.columns}
+                grp_summary = groups_src.groupby("ad_group", as_index=False).agg(agg_dict)
+                if "impressions" in grp_summary and "clicks" in grp_summary:
+                    grp_summary["ctr"] = (grp_summary["clicks"] / grp_summary["impressions"].replace(0, pd.NA) * 100).fillna(0)
+                if "spend_rub" in grp_summary and "clicks" in grp_summary:
+                    grp_summary["avg_cpc"] = (grp_summary["spend_rub"] / grp_summary["clicks"].replace(0, pd.NA)).fillna(0)
+                if "conversions" in grp_summary and "spend_rub" in grp_summary:
+                    grp_summary["cpl"] = (grp_summary["spend_rub"] / grp_summary["conversions"].replace(0, pd.NA))
+                grp_summary = grp_summary.sort_values("spend_rub", ascending=False)
+
+                st.markdown(f"**Группы объявлений в кампании** — {len(grp_summary)} шт.")
+                grp_display = grp_summary.rename(columns={
+                    "ad_group": "Группа",
+                    "impressions": "Показы",
+                    "clicks": "Клики",
+                    "ctr": "CTR, %",
+                    "spend_rub": "Расход, ₽",
+                    "avg_cpc": "CPC, ₽",
+                    "conversions": "Конв.",
+                    "cpl": "CPL, ₽",
+                })
+                st.dataframe(
+                    grp_display, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                        "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                        "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                        "CPL, ₽": st.column_config.NumberColumn(format="%.0f"),
+                        "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                        "Показы": st.column_config.NumberColumn(format="%d"),
+                        "Клики": st.column_config.NumberColumn(format="%d"),
+                    },
+                )
+
+                # ─── Drill в группу ───────────────────────────
+                group_options = grp_summary["ad_group"].tolist()
+                _grp_spend_map = dict(zip(grp_summary["ad_group"], grp_summary["spend_rub"].fillna(0)))
+
+                def _fmt_grp(name: str) -> str:
+                    sp = _grp_spend_map.get(name, 0)
+                    return f"{name[:80]} · {fmt_rub(sp)}"
+
+                sel_group = st.selectbox(
+                    "📁 Группа объявлений",
+                    options=group_options,
+                    format_func=_fmt_grp,
+                    key=f"dd_grp_select_{sel_camp[:30]}",
+                )
+
+                if sel_group:
+                    # Объявления + ключи в выбранной группе — 2 колонки
+                    g_ads = camp_ads_df[camp_ads_df["ad_group"] == sel_group] if not camp_ads_df.empty else pd.DataFrame()
+                    g_kw = camp_kw_df[camp_kw_df["ad_group"] == sel_group] if not camp_kw_df.empty else pd.DataFrame()
+
+                    col_ads, col_kw = st.columns(2)
+
+                    with col_ads:
+                        st.markdown(f"**Объявления** ({len(g_ads)} шт.)")
+                        if g_ads.empty:
+                            st.info("Нет объявлений по этой группе.")
+                        else:
+                            g_ads_show = g_ads.sort_values("spend_rub", ascending=False)
+                            ads_display = g_ads_show.rename(columns={
+                                "ad_id": "AdId",
+                                "impressions": "Показы",
+                                "clicks": "Клики",
+                                "ctr": "CTR, %",
+                                "spend_rub": "Расход, ₽",
+                                "avg_cpc": "CPC, ₽",
+                                "conversions": "Конв.",
+                                "conversion_rate": "CR, %",
+                            })
+                            cols = [c for c in ("AdId", "Показы", "Клики", "CTR, %",
+                                                "Расход, ₽", "CPC, ₽", "Конв.", "CR, %")
+                                    if c in ads_display.columns]
+                            st.dataframe(
+                                ads_display[cols], use_container_width=True, hide_index=True,
+                                column_config={
+                                    "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                                    "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                                    "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                                    "CR, %": st.column_config.NumberColumn(format="%.2f"),
+                                    "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                                },
+                            )
+
+                    with col_kw:
+                        st.markdown(f"**Ключевые слова** ({len(g_kw)} шт.)")
+                        if g_kw.empty:
+                            st.info("Нет ключей по этой группе.")
+                        else:
+                            g_kw_show = g_kw.sort_values("spend_rub", ascending=False)
+                            kw_display = g_kw_show.rename(columns={
+                                "criterion": "Ключевик",
+                                "match_type": "Тип",
+                                "impressions": "Показы",
+                                "clicks": "Клики",
+                                "ctr": "CTR, %",
+                                "spend_rub": "Расход, ₽",
+                                "avg_cpc": "CPC, ₽",
+                                "conversions": "Конв.",
+                                "cost_per_conversion": "CPL, ₽",
+                            })
+                            cols = [c for c in ("Ключевик", "Тип", "Показы", "Клики",
+                                                "CTR, %", "Расход, ₽", "CPC, ₽",
+                                                "Конв.", "CPL, ₽")
+                                    if c in kw_display.columns]
+                            st.dataframe(
+                                kw_display[cols], use_container_width=True, hide_index=True,
+                                column_config={
+                                    "Расход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                                    "CPC, ₽": st.column_config.NumberColumn(format="%.1f"),
+                                    "CTR, %": st.column_config.NumberColumn(format="%.2f"),
+                                    "CPL, ₽": st.column_config.NumberColumn(format="%.0f"),
+                                    "Конв.": st.column_config.NumberColumn(format="%.0f"),
+                                },
+                            )
+
+# ====== Tab 1: ВСЕ КАМПАНИИ (плоский отчёт) ===================
+with quality_tabs[1]:
     if _q_camp.empty:
         st.info("Нет данных по кампаниям.")
     else:
@@ -427,8 +653,8 @@ with quality_tabs[0]:
                 st.plotly_chart(fig_qc, use_container_width=True)
 
 
-# ====== Tab 2: КЛЮЧЕВЫЕ СЛОВА ================================
-with quality_tabs[1]:
+# ====== Tab 2: ВСЕ КЛЮЧЕВЫЕ СЛОВА ============================
+with quality_tabs[2]:
     if _q_kw.empty:
         st.info("Нет данных по ключевикам.")
     else:
@@ -491,8 +717,8 @@ with quality_tabs[1]:
                 )
 
 
-# ====== Tab 3: ОБЪЯВЛЕНИЯ ====================================
-with quality_tabs[2]:
+# ====== Tab 3: ВСЕ ОБЪЯВЛЕНИЯ ================================
+with quality_tabs[3]:
     if _q_ad.empty:
         st.info("Нет данных по объявлениям.")
     else:
