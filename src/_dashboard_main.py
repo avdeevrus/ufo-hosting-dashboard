@@ -2314,6 +2314,181 @@ else:
 
 
 # ============================================================
+#         📊 ИСТОЧНИКИ ТРАФИКА (ЯНДЕКС.МЕТРИКА)
+# ============================================================
+# Дополнительный блок: данные напрямую из Метрики через её API.
+# Атрибуция «Последний значимый переход» + кросс-девайс (как
+# настроено в web-интерфейсе клиента).
+#
+# ВАЖНО: данные Метрики оценочные — могут расходиться с реальными
+# оплатами в CSV из BILLmanager (двойные хиты целей, реклоустеризация
+# визитов). Основа экономики дашборда — всегда CSV; Метрика нужна
+# только для атрибуции «откуда пришёл клиент».
+
+try:
+    import metrika as MK
+    _mk_creds = MK.get_credentials()
+except Exception:
+    _mk_creds = None
+    MK = None
+
+if _mk_creds is not None and MK is not None:
+    st.markdown(
+        '<div class="section-title">📊 Источники трафика и воронка покупок (из Метрики)</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Данные тянутся напрямую из Яндекс.Метрики. Атрибуция: "
+        "**Последний значимый переход** + **кросс-девайс**. "
+        "⚠️ Цифры покупок и дохода здесь оценочные (Метрика считает "
+        "хиты целей) — реальные оплаты см. в шапке (CSV из BILLmanager)."
+    )
+
+    # Кэш — Метрика API не любит частые запросы
+    @st.cache_data(ttl=1800, show_spinner=False)
+    def _cached_metrika(period: tuple):
+        df_from, df_to = period
+        summary = MK.fetch_goal_summary(_mk_creds, df_from, df_to)
+        funnel  = MK.fetch_funnel(_mk_creds, df_from, df_to)
+        sources = MK.fetch_revenue_by_source(_mk_creds, df_from, df_to, limit=15)
+        direct  = MK.fetch_revenue_by_direct_campaign(_mk_creds, df_from, df_to, limit=20)
+        return summary, funnel, sources, direct
+
+    _mk_period = (d_from.strftime("%Y-%m-%d"), d_to.strftime("%Y-%m-%d"))
+    try:
+        with st.spinner("📡 Тяну данные из Яндекс.Метрики…"):
+            mk_summary, mk_funnel, mk_sources, mk_direct = _cached_metrika(_mk_period)
+    except Exception as e:
+        st.warning(f"Не удалось получить данные из Метрики: {e}")
+        mk_summary = mk_funnel = mk_sources = mk_direct = pd.DataFrame()
+
+    if not mk_summary.empty:
+        # ─── KPI: ключевые цели ────────────────────────────────
+        by_key = {r["goal_key"]: r for _, r in mk_summary.iterrows()}
+        mk_c1, mk_c2, mk_c3, mk_c4 = st.columns(4)
+        reg = by_key.get("register", {"users": 0})
+        mk_c1.markdown(kpi_card(
+            "Регистраций в BM",
+            fmt_num(reg["users"]),
+            f"{int(reg.get('reaches', 0))} событий за {period_label}",
+            kind="primary",
+            tooltip="Уникальные пользователи, достигшие цели user_register в Метрике.",
+        ), unsafe_allow_html=True)
+        cart = by_key.get("add_to_cart", {"users": 0})
+        mk_c2.markdown(kpi_card(
+            "Добавили в корзину",
+            fmt_num(cart["users"]),
+            f"уникальных",
+            kind="primary",
+            tooltip="Уникальные пользователи, добавившие услугу в корзину BILLmanager.",
+        ), unsafe_allow_html=True)
+        gtp = by_key.get("go_to_pay", {"users": 0})
+        mk_c3.markdown(kpi_card(
+            "Перешли к оплате",
+            fmt_num(gtp["users"]),
+            "уникальных",
+            kind="primary",
+            tooltip="Уникальные пользователи, перешедшие на страницу выбора способа оплаты.",
+        ), unsafe_allow_html=True)
+        epur = by_key.get("e_purchase", {"users": 0, "revenue": 0})
+        mk_c4.markdown(kpi_card(
+            "Оплат (Ecommerce)",
+            fmt_num(epur["users"]),
+            f"оценочный доход {fmt_rub(epur['revenue'])}",
+            kind="green",
+            tooltip="Покупки по цели e_purchase. Сумма — то, что отправил BILLmanager в Метрику; "
+                    "может отличаться от реальных оплат в CSV.",
+        ), unsafe_allow_html=True)
+
+        st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+
+        # ─── Воронка ──────────────────────────────────────────
+        if not mk_funnel.empty:
+            mk_col_f, mk_col_t = st.columns([1.2, 1])
+            with mk_col_f:
+                fig_fn = go.Figure(go.Funnel(
+                    y=mk_funnel["stage"].tolist(),
+                    x=mk_funnel["users"].tolist(),
+                    textposition="inside",
+                    textinfo="value+percent initial",
+                    marker={"color": [PALETTE["primary"], "#60a5fa", "#3b82f6",
+                                      "#1d4ed8", PALETTE["green"]]},
+                    connector={"line": {"color": PALETTE["muted"], "width": 1}},
+                ))
+                fig_fn.update_layout(
+                    **{**PLOTLY_LAYOUT, "height": 320,
+                       "title": "Воронка: посетитель → оплата (уникальные)"},
+                )
+                st.plotly_chart(fig_fn, use_container_width=True)
+                st.caption(
+                    "ℹ️ Цели на разных ступенях считаются независимо (через атрибуцию "
+                    "«Последний значимый переход») — поэтому числа могут не строго "
+                    "убывать. Это нормально для Метрики."
+                )
+
+            # ─── Источники трафика → доход ────────────────────
+            with mk_col_t:
+                if not mk_sources.empty:
+                    st.markdown("**Доход (Метрика) по источникам — топ 15**")
+                    src_show = mk_sources.copy()
+                    src_show.columns = ["Источник", "Доход, ₽", "Покупок", "Визитов"]
+                    st.dataframe(
+                        src_show, use_container_width=True, hide_index=True, height=350,
+                        column_config={
+                            "Доход, ₽": st.column_config.NumberColumn(format="%.0f"),
+                            "Покупок":  st.column_config.NumberColumn(format="%d"),
+                            "Визитов":  st.column_config.NumberColumn(format="%d"),
+                        },
+                    )
+
+        # ─── Я.Директ — какие кампании приносят покупки ───────
+        if not mk_direct.empty:
+            st.markdown(
+                "**Я.Директ: какие кампании реально приносят покупки** "
+                "(только визиты с платной рекламы)"
+            )
+            d_show = mk_direct.copy()
+            d_show["avg_check"] = (d_show["revenue"] / d_show["purchases"].replace(0, pd.NA)).fillna(0)
+            d_show = d_show.rename(columns={
+                "campaign":  "Кампания",
+                "revenue":   "Доход, ₽",
+                "purchases": "Покупок",
+                "visits":    "Визитов",
+                "avg_check": "Ср. чек, ₽",
+            })
+            st.dataframe(
+                d_show, use_container_width=True, hide_index=True,
+                column_config={
+                    "Доход, ₽":   st.column_config.NumberColumn(format="%.0f"),
+                    "Покупок":    st.column_config.NumberColumn(format="%d"),
+                    "Визитов":    st.column_config.NumberColumn(format="%d"),
+                    "Ср. чек, ₽": st.column_config.NumberColumn(format="%.0f"),
+                },
+            )
+            total_direct_rev = float(d_show["Доход, ₽"].sum())
+            total_direct_purch = int(d_show["Покупок"].sum())
+            st.caption(
+                f"💡 Всего Я.Директ принёс **{total_direct_purch} покупок** на "
+                f"**{fmt_rub(total_direct_rev)}** по атрибуции «Последний значимый "
+                f"переход». Это **прямой вклад рекламы** — повторные визиты "
+                f"клиентов уже не учитываются здесь."
+            )
+else:
+    # Креды Метрики не настроены — короткая подсказка
+    with st.expander("📊 Подключить Я.Метрику для атрибуции источников"):
+        st.markdown(
+            "Чтобы дашборд показывал «откуда приходят клиенты» прямо из "
+            "Метрики, добавьте в **Streamlit Secrets**:\n\n"
+            "```toml\n"
+            'METRIKA_TOKEN = "y0_AgAAAA..."\n'
+            "METRIKA_COUNTER_ID = 102931802\n"
+            "```\n\n"
+            "Токен — на oauth.yandex.ru → создать приложение со scope "
+            "`metrika:read`. Counter ID — в metrika.yandex.ru сверху страницы счётчика."
+        )
+
+
+# ============================================================
 #         🎯 ДОЛГОСРОЧНАЯ ОКУПАЕМОСТЬ РЕКЛАМЫ
 # ============================================================
 # То чего НЕТ в Я.Директе и Метрике: связка «рекламный рубль ↔ платежи
