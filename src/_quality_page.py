@@ -596,16 +596,16 @@ else:
         ],
     }
 
-    # ВАЖНО: передаём data как list of dicts, а не DataFrame.
-    # streamlit-aggrid 1.0.5 делает `if data:` на переданном объекте —
-    # на DataFrame это бросает ValueError (ambiguous truth value).
+    # ВАЖНО: используем streamlit-aggrid==0.3.4.post3 (старая стабильная).
+    # Версии 1.0.x имеют баги в _parse_data_and_grid_options:
+    # сначала data.dtypes (требует DataFrame), потом if data: (на
+    # DataFrame падает ValueError ambiguous). На 0.3.4.post3 всё ок.
     AgGrid(
-        data=tree_df.to_dict(orient="records"),
+        tree_df,
         gridOptions=grid_options,
         allow_unsafe_jscode=True,
         height=720,
         theme="streamlit",
-        update_mode="NO_UPDATE",
         fit_columns_on_grid_load=False,
     )
 
