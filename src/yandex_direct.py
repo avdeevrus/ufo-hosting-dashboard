@@ -174,23 +174,80 @@ def _chunked_periods(date_from: str, date_to: str, chunk_days: int = 90):
 def _fetch_chunked(creds: DirectCredentials,
                    report_type: str,
                    field_names: list[str],
-                   date_from: str, date_to: str) -> pd.DataFrame:
-    """Тянет отчёт чанками по 90 дней и склеивает результаты в один DataFrame."""
-    chunks = []
-    for chunk_from, chunk_to in _chunked_periods(date_from, date_to, chunk_days=90):
+                   date_from: str, date_to: str,
+                   *, max_workers: int = 5,
+                   progress_callback=None) -> pd.DataFrame:
+    """Тянет отчёт чанками по 90 дней ПАРАЛЛЕЛЬНО и склеивает в один DataFrame.
+
+    Reports API асинхронный (201/202 пока строится → poll → 200 готово).
+    Каждый чанк может занимать 10-60 секунд из-за polling. Если их 12+
+    и тянуть последовательно — это легко 5-10 минут. Параллельно с 5 потоками
+    сокращает в 4-5×.
+
+    progress_callback(done: int, total: int) — вызывается при завершении
+    каждого чанка (потокобезопасно через lock).
+    """
+    import concurrent.futures
+    import threading
+
+    chunks_periods = list(_chunked_periods(date_from, date_to, chunk_days=90))
+    total = len(chunks_periods)
+
+    # Для маленьких периодов (1 чанк) параллелизация не нужна
+    if total <= 1:
+        if not chunks_periods:
+            return pd.DataFrame()
+        chunk_from, chunk_to = chunks_periods[0]
         body = _build_body(report_type, field_names, chunk_from, chunk_to)
         try:
             df = _fetch_report(creds, body)
         except RuntimeError as e:
-            # Code 54 = «за период нет данных» — для chunk это OK, идём дальше
             if "54" in str(e):
-                continue
+                return pd.DataFrame()
             raise
-        if not df.empty:
-            chunks.append(df)
-    if not chunks:
+        if progress_callback:
+            progress_callback(1, 1)
+        return df if not df.empty else pd.DataFrame()
+
+    results: list[pd.DataFrame | None] = [None] * total
+    errors: list[BaseException] = []
+    done_count = 0
+    lock = threading.Lock()
+
+    def _fetch_one(idx: int, chunk_from: str, chunk_to: str):
+        nonlocal done_count
+        body = _build_body(report_type, field_names, chunk_from, chunk_to)
+        try:
+            df = _fetch_report(creds, body)
+            results[idx] = df
+        except RuntimeError as e:
+            if "54" in str(e):
+                results[idx] = pd.DataFrame()  # пусто — не ошибка
+            else:
+                with lock:
+                    errors.append(e)
+        finally:
+            with lock:
+                done_count += 1
+                if progress_callback:
+                    try:
+                        progress_callback(done_count, total)
+                    except Exception:
+                        pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_fetch_one, i, cf, ct)
+                   for i, (cf, ct) in enumerate(chunks_periods)]
+        concurrent.futures.wait(futures)
+
+    if errors and all(r is None or (isinstance(r, pd.DataFrame) and r.empty) for r in results):
+        # Все чанки упали или ничего не вернули — поднимаем первую ошибку
+        raise errors[0]
+
+    valid = [r for r in results if r is not None and not r.empty]
+    if not valid:
         return pd.DataFrame()
-    return pd.concat(chunks, ignore_index=True)
+    return pd.concat(valid, ignore_index=True)
 
 
 # ============================================================
@@ -254,14 +311,16 @@ CAMPAIGN_QUALITY_FIELDS = [
 
 def fetch_campaign_quality(creds: DirectCredentials,
                            date_from: str,
-                           date_to: str) -> pd.DataFrame:
+                           date_to: str,
+                           *, progress_callback=None) -> pd.DataFrame:
     """Расширенный отчёт по кампаниям за период: CTR, CPC, Conv, поведенческие.
 
     За большие периоды (>92 дней) Reports API может вернуть пусто/обрезать —
-    тянем чанками по 90 дней и склеиваем агрегатом по кампании.
+    тянем чанками по 90 дней (параллельно) и склеиваем агрегатом по кампании.
     """
     df = _fetch_chunked(creds, "CAMPAIGN_PERFORMANCE_REPORT",
-                        CAMPAIGN_QUALITY_FIELDS, date_from, date_to)
+                        CAMPAIGN_QUALITY_FIELDS, date_from, date_to,
+                        progress_callback=progress_callback)
     if df.empty:
         return df
     df = df.rename(columns={
@@ -320,7 +379,8 @@ KEYWORD_REPORT_FIELDS = [
 
 def fetch_keyword_report(creds: DirectCredentials,
                          date_from: str,
-                         date_to: str) -> pd.DataFrame:
+                         date_to: str,
+                         *, progress_callback=None) -> pd.DataFrame:
     """Отчёт по ключевым словам за период. Агрегат, без разреза по дням.
 
     В Reports API правильное имя отчёта для ключевиков —
@@ -328,10 +388,12 @@ def fetch_keyword_report(creds: DirectCredentials,
     и вызывает ошибку 8000 «ReportType содержит неверное значение»).
 
     Reports API имеет лимит 92 дня для большинства отчётов — тянем
-    чанками по 90 дней, агрегируем по (campaign, ad_group, criterion, match_type).
+    чанками по 90 дней (параллельно), агрегируем по
+    (campaign, ad_group, criterion, match_type).
     """
     df = _fetch_chunked(creds, "CRITERIA_PERFORMANCE_REPORT",
-                        KEYWORD_REPORT_FIELDS, date_from, date_to)
+                        KEYWORD_REPORT_FIELDS, date_from, date_to,
+                        progress_callback=progress_callback)
     if df.empty:
         return df
     df = df.rename(columns={
@@ -387,12 +449,14 @@ AD_REPORT_FIELDS = [
 
 def fetch_ad_report(creds: DirectCredentials,
                     date_from: str,
-                    date_to: str) -> pd.DataFrame:
+                    date_to: str,
+                    *, progress_callback=None) -> pd.DataFrame:
     """Отчёт по объявлениям за период. Тянем чанками по 90 дней
-    (лимит AD_PERFORMANCE_REPORT в Reports API) и склеиваем агрегатом.
+    (лимит AD_PERFORMANCE_REPORT в Reports API), параллельно, и склеиваем.
     """
     df = _fetch_chunked(creds, "AD_PERFORMANCE_REPORT",
-                        AD_REPORT_FIELDS, date_from, date_to)
+                        AD_REPORT_FIELDS, date_from, date_to,
+                        progress_callback=progress_callback)
     if df.empty:
         return df
     df = df.rename(columns={

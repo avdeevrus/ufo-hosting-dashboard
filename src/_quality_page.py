@@ -114,19 +114,40 @@ with st.sidebar:
 
                 with st.status(f"📥 Тяну Я.Директ за {period_str[0]} – {period_str[1]}…",
                                expanded=True) as st_status:
+
+                    def _make_progress(stage_num: int, stage_name: str):
+                        """Возвращает callback, который обновляет label статуса
+                        по мере завершения чанков (параллельно)."""
+                        def _cb(done: int, total: int):
+                            st_status.update(
+                                label=f"📥 [{stage_num}/3] {stage_name} — "
+                                      f"чанков {done}/{total} (параллельно)",
+                                state="running",
+                            )
+                        return _cb
+
                     st_status.update(label="📥 [1/3] Кампании (CTR, CPC, конверсии)…",
                                      state="running")
-                    cq = fetch_campaign_quality(creds_q, *period_str)
+                    cq = fetch_campaign_quality(
+                        creds_q, *period_str,
+                        progress_callback=_make_progress(1, "Кампании"),
+                    )
                     save_quality_cache("campaign_quality", cq, period_str)
                     st.write(f"✅ Кампании: {len(cq)} строк")
 
                     st_status.update(label="📥 [2/3] Ключевые слова…", state="running")
-                    kw = fetch_keyword_report(creds_q, *period_str)
+                    kw = fetch_keyword_report(
+                        creds_q, *period_str,
+                        progress_callback=_make_progress(2, "Ключевые слова"),
+                    )
                     save_quality_cache("keywords", kw, period_str)
                     st.write(f"✅ Ключевые слова: {len(kw)} строк")
 
                     st_status.update(label="📥 [3/3] Объявления (креативы)…", state="running")
-                    ad = fetch_ad_report(creds_q, *period_str)
+                    ad = fetch_ad_report(
+                        creds_q, *period_str,
+                        progress_callback=_make_progress(3, "Объявления"),
+                    )
                     save_quality_cache("ads_creatives", ad, period_str)
                     st.write(f"✅ Объявления: {len(ad)} строк")
 
@@ -196,10 +217,24 @@ if _cache_empty and _yd_creds_global and not _auto_failed:
                 ("Ключевые слова (с match-type)",          "keywords",          fetch_keyword_report),
                 ("Объявления (креативы)",                  "ads_creatives",     fetch_ad_report),
             ]
+
+            def _make_auto_progress(stage_num: int, stage_label: str):
+                """callback показывает прогресс «чанков X/Y» в текущей строке статуса."""
+                def _cb(done: int, total: int):
+                    status.update(
+                        label=f"📥 [{stage_num}/3] {stage_label} — "
+                              f"чанков {done}/{total} (параллельно)",
+                        state="running",
+                    )
+                return _cb
+
             for i, (label, kind, fetcher) in enumerate(stages, start=1):
                 status.update(label=f"📥 [{i}/3] {label}…", state="running")
                 try:
-                    df = fetcher(auto_creds, *auto_period)
+                    df = fetcher(
+                        auto_creds, *auto_period,
+                        progress_callback=_make_auto_progress(i, label),
+                    )
                     save_quality_cache(kind, df, auto_period)
                     st.write(f"✅ {label}: {len(df)} строк")
                 except Exception as ex:
