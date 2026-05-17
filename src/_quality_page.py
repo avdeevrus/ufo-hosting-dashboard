@@ -76,13 +76,45 @@ if not check_password():
 # ─── Стили ────────────────────────────────────────────────────
 apply_base_styles()
 
-
-# ─── Hero ─────────────────────────────────────────────────────
+# Компактный CSS специально для этой страницы — убираем лишний воздух
+# между блоками, прижимаем шапку к топу, стилизуем дата-инпуты.
 st.markdown(
     """
-    <div style="padding: 0.2rem 0 1rem;">
-      <h1 style="margin:0; font-size:1.65rem; letter-spacing:-0.4px;">🎯 Качество рекламы</h1>
-      <div style="color:#57606a; font-size:0.85rem; margin-top:0.3rem;">
+    <style>
+      /* Минимум padding сверху, чтобы шапка была ближе к топу окна */
+      .main .block-container,
+      section.main > div > div > div.block-container,
+      [data-testid="stMainBlockContainer"] {
+          padding-top: 0.55rem !important;
+          padding-bottom: 0.5rem !important;
+      }
+      /* Сжимаем зазоры между элементами */
+      .element-container { margin-bottom: 0.35rem !important; }
+      /* Компактные label у дата-инпутов */
+      [data-testid="stDateInput"] label { font-size: 0.78rem !important; margin-bottom: 0.15rem !important; }
+      /* Кнопка primary — выше плотности */
+      [data-testid="stBaseButton-primary"] { font-weight: 600 !important; }
+      /* Заголовки убираем большие margin */
+      h1, h2, h3 { margin-top: 0.4rem !important; margin-bottom: 0.3rem !important; }
+      /* KPI карточки — плотнее */
+      .kpi-card { padding: 0.7rem 0.85rem !important; }
+      .kpi-label { font-size: 0.7rem !important; }
+      .kpi-value { font-size: 1.55rem !important; line-height: 1.1 !important; }
+      .kpi-sub   { font-size: 0.72rem !important; }
+      /* AgGrid внутри st-aggrid div — без лишних рамок */
+      iframe[title="st_aggrid.agGrid"] { border: 1px solid #e1e4e8 !important; border-radius: 8px !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ─── Hero (компактный header) ─────────────────────────────────
+st.markdown(
+    """
+    <div style="display:flex; align-items:baseline; gap:0.7rem; padding:0.1rem 0 0.45rem;">
+      <h1 style="margin:0; font-size:1.4rem; letter-spacing:-0.4px;">🎯 Качество рекламы</h1>
+      <div style="color:#6a737d; font-size:0.78rem;">
         Яндекс.Директ · CTR · CPC · конверсии-цели · ключевики · объявления
       </div>
     </div>
@@ -145,23 +177,29 @@ else:
             format="DD.MM.YYYY",
         )
     with tb_c3:
-        st.markdown("<div style='height:1.65rem'></div>", unsafe_allow_html=True)
+        # Тонкий спейсер чтобы кнопка совпала по высоте с date-инпутами
+        st.markdown("<div style='height:1.45rem'></div>", unsafe_allow_html=True)
         _sync_clicked = st.button(
             "📥 Подтянуть качество",
             use_container_width=True, type="primary",
             key="yd_quality_sync",
         )
     with tb_c4:
-        st.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:1.55rem'></div>", unsafe_allow_html=True)
         _, _cq_meta_pre = load_quality_cache("campaign_quality")
         if _cq_meta_pre:
-            st.caption(
-                f"📦 Кэш за **{_cq_meta_pre.get('period_from', '?')} – "
-                f"{_cq_meta_pre.get('period_to', '?')}** · "
-                f"кэширует CTR/CPC/конверсии, не запрашивает повторно"
+            st.markdown(
+                f"<div style='font-size:0.78rem; color:#57606a; padding-top:0.3rem;'>"
+                f"📦 Кэш за <b>{_cq_meta_pre.get('period_from', '?')}</b> — "
+                f"<b>{_cq_meta_pre.get('period_to', '?')}</b></div>",
+                unsafe_allow_html=True,
             )
         else:
-            st.caption("Кэш пуст — нажмите «Подтянуть качество» для загрузки.")
+            st.markdown(
+                "<div style='font-size:0.78rem; color:#9ba3ab; padding-top:0.3rem;'>"
+                "Кэш пуст — нажмите «Подтянуть качество»</div>",
+                unsafe_allow_html=True,
+            )
 
     if _sync_clicked:
         try:
@@ -330,25 +368,23 @@ if _cache_empty:
         )
     st.stop()
 
-_q_period_lbl = (
-    f"{_q_camp_meta.get('period_from', '?')} – {_q_camp_meta.get('period_to', '?')}"
-    if _q_camp_meta else "—"
-)
-st.caption(f"Данные API за период **{_q_period_lbl}**. Обновляется кнопкой «Подтянуть качество» в шапке выше.")
-
-# Расхождение с шапкой главного дашборда — если расход с API < расхода
-# в XLSX за общий период, скорее всего XLSX содержит архивные кампании
-# которые API уже не отдаёт.
+# Caption «период данных» убран как дубль кэш-инфо в топбаре.
+# Caption про расход 10.65 vs главный дашборд — компактно одной строкой
+# с tooltip, чтобы не съедать вертикальное пространство.
 _qp_total_spend = (
     pd.to_numeric(_q_camp["spend_rub"], errors="coerce").sum()
     if "spend_rub" in _q_camp.columns else 0.0
 )
 if _qp_total_spend > 0:
-    st.caption(
-        f"ℹ️ **Расход {fmt_rub(_qp_total_spend)} = только Яндекс.Директ API.** "
-        f"На главном дашборде расход может быть больше — там XLSX-выгрузки + API. "
+    st.markdown(
+        f"<div style='font-size:0.75rem; color:#6a737d; margin:-0.1rem 0 0.5rem 0;' "
+        f"title='На главном дашборде расход может быть больше — там XLSX-выгрузки + API. "
         f"XLSX часто содержит архивные/закрытые кампании, которые API уже не возвращает. "
-        f"Это не ошибка расчёта — это разный охват источников."
+        f"Это не ошибка расчёта — разный охват источников.'>"
+        f"ℹ️ Расход <b>{fmt_rub(_qp_total_spend)}</b> = только Я.Директ API "
+        f"(на главном дашборде может быть больше — там XLSX+API; наведите для деталей)"
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
 
@@ -527,15 +563,14 @@ tree_df = pd.DataFrame(rows)
 
 
 # ─── Сама AgGrid treetable ────────────────────────────────────
-st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+# Заголовок секции убран — название уже в первой колонке таблицы.
+# Подсказка про плюсики — компактно одной строкой.
 st.markdown(
-    '<div style="font-size:1.05rem; font-weight:600; margin-bottom:0.4rem;">'
-    '📊 Кампания → Группа → Объявление</div>',
+    "<div style='font-size:0.75rem; color:#6a737d; margin:0.4rem 0 0.3rem 0;'>"
+    "💡 Раскрывайте строки кампаний плюсиками: <b>группы объявлений → "
+    "📰 объявления и 🔑 ключевые фразы</b>. Все метрики видны на каждой строке."
+    "</div>",
     unsafe_allow_html=True,
-)
-st.caption(
-    "Раскрывайте плюсиками: уровень кампании → группы объявлений → объявления. "
-    "Все метрики (показы, CTR, расход, CPC, конверсии, CR, CPL) сразу видны на каждой строке."
 )
 
 try:
@@ -585,9 +620,13 @@ else:
         "animateRows": True,
         "groupDefaultExpanded": 0,  # 0 = всё свернуто, 1 = до 1-го уровня
         "getDataPath": get_data_path,
+        # autoGroupColumnDef — это первая колонка дерева (имя кампании/
+        # группы/объявления). Закреплена слева, flex=2 — занимает в 2 раза
+        # больше места чем обычная колонка метрики.
         "autoGroupColumnDef": {
             "headerName": "Кампания / Группа / Объявление / Ключ",
-            "minWidth": 420,
+            "minWidth": 320,
+            "flex": 2.5,
             "pinned": "left",
             "cellRendererParams": {
                 "suppressCount": True,  # не показывать "(N)" рядом с группой
@@ -597,31 +636,35 @@ else:
             "sortable": True,
             "resizable": True,
             "filter": False,
+            "flex": 1,           # все колонки делят оставшееся место поровну
+            "minWidth": 80,      # но не уже 80px (иначе цифры обрежутся)
+            "cellStyle": {"textAlign": "right", "fontVariantNumeric": "tabular-nums"},
         },
+        "rowHeight": 32,         # компактнее
+        "headerHeight": 36,
         "columnDefs": [
-            {"field": "level", "headerName": "Тип", "width": 130, "hide": True},
-            {"field": "impressions",   "headerName": "Показы",     "valueFormatter": fmt_int,   "width": 110, "type": "numericColumn"},
-            {"field": "clicks",        "headerName": "Клики",      "valueFormatter": fmt_int,   "width":  95, "type": "numericColumn"},
-            {"field": "ctr",           "headerName": "CTR",        "valueFormatter": fmt_pct,   "width":  85, "type": "numericColumn"},
-            {"field": "spend_rub",     "headerName": "Расход",     "valueFormatter": fmt_money, "width": 130, "type": "numericColumn"},
-            {"field": "avg_cpc",       "headerName": "CPC",        "valueFormatter": fmt_cpc,   "width":  90, "type": "numericColumn"},
-            {"field": "conversions",   "headerName": "Конв.",      "valueFormatter": fmt_int,   "width":  85, "type": "numericColumn"},
-            {"field": "conversion_rate","headerName": "CR",        "valueFormatter": fmt_pct,   "width":  85, "type": "numericColumn"},
-            {"field": "cpl",           "headerName": "CPL",        "valueFormatter": fmt_money, "width": 110, "type": "numericColumn"},
-            {"field": "bounce_rate",   "headerName": "Отказы",     "valueFormatter": fmt_pct,   "width":  95, "type": "numericColumn"},
+            {"field": "level", "headerName": "Тип", "hide": True},
+            {"field": "impressions",    "headerName": "Показы",  "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  95},
+            {"field": "clicks",         "headerName": "Клики",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  85},
+            {"field": "ctr",            "headerName": "CTR",     "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75},
+            {"field": "spend_rub",      "headerName": "Расход",  "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 115, "flex": 1.3},
+            {"field": "avg_cpc",        "headerName": "CPC",     "valueFormatter": fmt_cpc,   "type": "numericColumn", "minWidth":  85},
+            {"field": "conversions",    "headerName": "Конв.",   "valueFormatter": fmt_int,   "type": "numericColumn", "minWidth":  75},
+            {"field": "conversion_rate","headerName": "CR",      "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  75},
+            {"field": "cpl",            "headerName": "CPL",     "valueFormatter": fmt_money, "type": "numericColumn", "minWidth": 100},
+            {"field": "bounce_rate",    "headerName": "Отказы",  "valueFormatter": fmt_pct,   "type": "numericColumn", "minWidth":  80},
         ],
     }
 
-    # ВАЖНО: используем streamlit-aggrid==0.3.4.post3 (старая стабильная).
-    # Версии 1.0.x имеют баги в _parse_data_and_grid_options:
-    # сначала data.dtypes (требует DataFrame), потом if data: (на
-    # DataFrame падает ValueError ambiguous). На 0.3.4.post3 всё ок.
+    # streamlit-aggrid==0.3.4.post3, передаём DataFrame.
+    # fit_columns_on_grid_load=True — растягивает колонки по flex
+    # на всю ширину контейнера, без горизонтального скролла.
     AgGrid(
         tree_df,
         gridOptions=grid_options,
         allow_unsafe_jscode=True,
         height=720,
         theme="streamlit",
-        fit_columns_on_grid_load=False,
+        fit_columns_on_grid_load=True,
     )
 
