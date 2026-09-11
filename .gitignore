@@ -24,3 +24,9 @@ reports/
 !data/orders/.gitkeep
 !data/ads/.gitkeep
 !reports/.gitkeep
+
+# Папка проекта работы с клиентом (диалоги, доступы, стратегия) — репозиторий ПУБЛИЧНЫЙ, не коммитим
+Проект_UFO_Hosting/
+# Архив старых скриншотов/HAR и служебные worktree Claude
+_archive/
+.claude/worktrees/
